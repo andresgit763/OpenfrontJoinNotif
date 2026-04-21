@@ -180,6 +180,13 @@ final class AppDelegate: NSObject,
     var flashOn = false
     var flashTimer: Timer?
 
+    // Stall detection. macOS sleep/wake often leaves URLSessionWebSocketTask
+    // holding a TCP half-state — receive() hangs silently without firing
+    // the failure callback. A watchdog timer compares the wall clock to
+    // the last message time and force-reconnects if it's been too long.
+    var lastMessageAt: Date = Date.distantPast
+    var watchdogTimer: Timer?
+
     // Stable menu-item references so every tick mutates titles in place
     // instead of tearing the menu down. Rebuilding (removeAllItems() +
     // add) dismisses the menu if it's open and also reorders items, which
@@ -215,7 +222,57 @@ final class AppDelegate: NSObject,
         rebuildWatchedSubmenu()
         updateMenuFromState()
         startFlashTimer()
+        startWatchdog()
+        registerSleepWakeHandlers()
         connectWebSocket()
+    }
+
+    // MARK: Sleep / wake handling
+
+    func registerSleepWakeHandlers() {
+        let nc = NSWorkspace.shared.notificationCenter
+        nc.addObserver(
+            self, selector: #selector(systemWillSleep(_:)),
+            name: NSWorkspace.willSleepNotification, object: nil
+        )
+        nc.addObserver(
+            self, selector: #selector(systemDidWake(_:)),
+            name: NSWorkspace.didWakeNotification, object: nil
+        )
+    }
+
+    @objc func systemWillSleep(_ note: Notification) {
+        // Proactively drop the socket so it doesn't go zombie during sleep.
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        connected = false
+    }
+
+    @objc func systemDidWake(_ note: Notification) {
+        // Reset backoff and reconnect immediately on wake.
+        reconnectAttempt = 0
+        connectWebSocket()
+    }
+
+    // MARK: Watchdog
+
+    func startWatchdog() {
+        // Every 2 s, check whether we've received a message in the last 5 s.
+        // Server broadcasts every 500 ms, so 5 s of silence = stalled.
+        watchdogTimer = Timer.scheduledTimer(
+            withTimeInterval: 2.0, repeats: true
+        ) { [weak self] _ in
+            guard let self else { return }
+            // Only care once we've ever received a message; otherwise it's
+            // just the initial connect taking a moment.
+            guard self.lastMessageAt > .distantPast else { return }
+            if Date().timeIntervalSince(self.lastMessageAt) > 5.0 {
+                NSLog("[ofmw] stall detected — forcing reconnect")
+                self.lastMessageAt = .distantPast
+                self.reconnectAttempt = 0
+                self.connectWebSocket()
+            }
+        }
     }
 
     // MARK: Status item / title
@@ -341,6 +398,7 @@ final class AppDelegate: NSObject,
         }
         currentLobbies = lobbies
         connected = true
+        lastMessageAt = Date()
 
         reconcileAlerts()
         // In-place mutation only — never re-adds/removes items, so the
