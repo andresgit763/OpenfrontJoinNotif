@@ -21,6 +21,14 @@ let MODE_LABELS: [String: String] = [
     "any": "Any", "ffa": "FFA", "team": "Team", "special": "Special",
 ]
 
+// Stable, deterministic category order for rendering. The server's JSON uses
+// a Swift `Dictionary` whose iteration order is NOT stable tick-to-tick, so
+// without this constant the three "Current" rows would visibly swap places
+// every broadcast even when lobby contents didn't change. Listing explicitly
+// also means any future publicGameType the server adds won't silently shift
+// existing rows around.
+let CATEGORY_ORDER = ["ffa", "team", "special"]
+
 // Mirrors src/core/game/Game.ts :: GameMapType in the OpenFrontIO repo.
 let ALL_MAPS: [String] = [
     "World", "Giant World Map", "Europe", "Europe Classic", "Mena",
@@ -172,7 +180,16 @@ final class AppDelegate: NSObject,
     var flashOn = false
     var flashTimer: Timer?
 
-    var lastFingerprint = ""
+    // Stable menu-item references so every tick mutates titles in place
+    // instead of tearing the menu down. Rebuilding (removeAllItems() +
+    // add) dismisses the menu if it's open and also reorders items, which
+    // is what was making "Watched maps" unclickable while updates flowed.
+    var statusHeaderItem: NSMenuItem!
+    var currentSlotItems: [NSMenuItem] = []     // 3 rows: one per category
+    var upcomingSlotItems: [NSMenuItem] = []    // 3 rows: one per category
+    var watchedParentItem: NSMenuItem!          // "Watched maps (N)"
+    var soundToggleItem: NSMenuItem!
+    var dismissAlertItem: NSMenuItem!
 
     // MARK: Lifecycle
 
@@ -194,7 +211,9 @@ final class AppDelegate: NSObject,
         )
 
         buildStatusItem()
-        rebuildMenu()
+        buildMenuStructure()
+        rebuildWatchedSubmenu()
+        updateMenuFromState()
         startFlashTimer()
         connectWebSocket()
     }
@@ -304,7 +323,10 @@ final class AppDelegate: NSObject,
 
         serverTime = pub.serverTime
         var lobbies: [Lobby] = []
-        for (kind, arr) in pub.games {
+        // Iterate in a fixed category order so the rendered row order is
+        // deterministic and stable tick to tick.
+        for kind in CATEGORY_ORDER {
+            guard let arr = pub.games[kind] else { continue }
             for (i, info) in arr.enumerated() {
                 lobbies.append(Lobby(
                     kind: kind,
@@ -321,18 +343,9 @@ final class AppDelegate: NSObject,
         connected = true
 
         reconcileAlerts()
-
-        // Fingerprint check — only rebuild menu when lobby state actually
-        // changed. Prevents flicker while the menu is open and saves CPU.
-        let fp = lobbies.map {
-            "\($0.gameID)|\($0.numClients)|\($0.startsAt)|\($0.isCurrent ? 1 : 0)"
-        }.joined(separator: ",")
-        if fp != lastFingerprint {
-            lastFingerprint = fp
-            rebuildMenu()
-        } else {
-            updateTitle()
-        }
+        // In-place mutation only — never re-adds/removes items, so the
+        // menu stays interactive while it's open.
+        updateMenuFromState()
     }
 
     // MARK: Alerts
@@ -394,77 +407,70 @@ final class AppDelegate: NSObject,
         }
     }
 
-    // MARK: Menu
+    // MARK: Menu — built once, mutated in place
 
-    func rebuildMenu() {
+    func buildMenuStructure() {
         menu.removeAllItems()
 
-        // Header status line
-        let statusText: String
-        if !activeAlerts.isEmpty {
-            statusText = "ALERT: \(activeAlerts.count) watched map(s) live"
-        } else if connected {
-            statusText = "Connected"
-        } else {
-            statusText = "Connecting…"
-        }
-        addDisabled(statusText)
-        menu.addItem(.separator())
-
-        // Split current / upcoming
-        let current = currentLobbies.filter { $0.isCurrent }
-        let upcoming = currentLobbies.filter { !$0.isCurrent }
-        addLobbyRows("Current lobbies (\(current.count))", current)
-        menu.addItem(.separator())
-        addLobbyRows("Upcoming (\(upcoming.count))", upcoming)
-        menu.addItem(.separator())
-
-        // Watched maps submenu
-        let watchedItem = NSMenuItem(
-            title: "Watched maps (\(watched.count))", action: nil, keyEquivalent: ""
+        statusHeaderItem = NSMenuItem(
+            title: "Connecting…", action: nil, keyEquivalent: ""
         )
-        let watchedMenu = NSMenu()
-        watchedMenu.autoenablesItems = false
+        statusHeaderItem.isEnabled = false
+        menu.addItem(statusHeaderItem)
 
-        if !watched.isEmpty {
-            let h = NSMenuItem(title: "— Selected —", action: nil, keyEquivalent: "")
-            h.isEnabled = false
-            watchedMenu.addItem(h)
-            for m in watched.keys.sorted() {
-                addMapItem(into: watchedMenu, map: m)
-            }
-            watchedMenu.addItem(.separator())
+        menu.addItem(.separator())
+
+        // Current lobbies section — fixed 3 slots, one per category.
+        let currentHeader = NSMenuItem(
+            title: "Current lobbies", action: nil, keyEquivalent: ""
+        )
+        currentHeader.isEnabled = false
+        menu.addItem(currentHeader)
+        for _ in CATEGORY_ORDER {
+            let it = NSMenuItem(
+                title: "    (waiting)",
+                action: #selector(openOpenFront(_:)),
+                keyEquivalent: ""
+            )
+            it.target = self
+            currentSlotItems.append(it)
+            menu.addItem(it)
         }
 
-        let ph = NSMenuItem(title: "— Popular —", action: nil, keyEquivalent: "")
-        ph.isEnabled = false
-        watchedMenu.addItem(ph)
-        for m in POPULAR_MAPS {
-            addMapItem(into: watchedMenu, map: m)
+        menu.addItem(.separator())
+
+        // Upcoming section — fixed 3 slots.
+        let upcomingHeader = NSMenuItem(
+            title: "Upcoming", action: nil, keyEquivalent: ""
+        )
+        upcomingHeader.isEnabled = false
+        menu.addItem(upcomingHeader)
+        for _ in CATEGORY_ORDER {
+            let it = NSMenuItem(
+                title: "    (waiting)",
+                action: #selector(openOpenFront(_:)),
+                keyEquivalent: ""
+            )
+            it.target = self
+            upcomingSlotItems.append(it)
+            menu.addItem(it)
         }
 
-        watchedMenu.addItem(.separator())
-        let ah = NSMenuItem(title: "— All maps —", action: nil, keyEquivalent: "")
-        ah.isEnabled = false
-        watchedMenu.addItem(ah)
-        for m in ALL_MAPS.sorted() {
-            addMapItem(into: watchedMenu, map: m)
-        }
+        menu.addItem(.separator())
 
-        watchedItem.submenu = watchedMenu
-        menu.addItem(watchedItem)
+        watchedParentItem = NSMenuItem(
+            title: "Watched maps", action: nil, keyEquivalent: ""
+        )
+        menu.addItem(watchedParentItem)
 
-        // Sound toggle
-        let soundItem = NSMenuItem(
+        soundToggleItem = NSMenuItem(
             title: "Play sound on alert",
             action: #selector(toggleSound(_:)),
             keyEquivalent: ""
         )
-        soundItem.target = self
-        soundItem.state = playSound ? .on : .off
-        menu.addItem(soundItem)
+        soundToggleItem.target = self
+        menu.addItem(soundToggleItem)
 
-        // Test notification
         let testItem = NSMenuItem(
             title: "Send test notification",
             action: #selector(sendTestNotification(_:)),
@@ -473,15 +479,13 @@ final class AppDelegate: NSObject,
         testItem.target = self
         menu.addItem(testItem)
 
-        // Dismiss alert
-        let dismiss = NSMenuItem(
+        dismissAlertItem = NSMenuItem(
             title: "Dismiss alert",
             action: #selector(dismissAlert(_:)),
             keyEquivalent: ""
         )
-        dismiss.target = self
-        dismiss.isEnabled = !activeAlerts.isEmpty
-        menu.addItem(dismiss)
+        dismissAlertItem.target = self
+        menu.addItem(dismissAlertItem)
 
         menu.addItem(.separator())
 
@@ -498,41 +502,100 @@ final class AppDelegate: NSObject,
         )
         quit.target = self
         menu.addItem(quit)
+    }
 
+    /// Mutate item titles / enabled state from the current state. Safe to
+    /// call while the menu is open: no item is added or removed, so the
+    /// open menu keeps working and the user can still click things.
+    func updateMenuFromState() {
         updateTitle()
+
+        if !activeAlerts.isEmpty {
+            statusHeaderItem.title =
+                "ALERT: \(activeAlerts.count) watched map(s) live"
+        } else if connected {
+            statusHeaderItem.title = "Connected"
+        } else {
+            statusHeaderItem.title = "Connecting…"
+        }
+
+        // Index lobbies by (kind, current?) and populate fixed slots in
+        // CATEGORY_ORDER so rows never swap places.
+        var currentByKind: [String: Lobby] = [:]
+        var upcomingByKind: [String: Lobby] = [:]
+        for l in currentLobbies {
+            if l.isCurrent {
+                currentByKind[l.kind] = l
+            } else if upcomingByKind[l.kind] == nil {
+                // Take first upcoming per category (server sorted by startsAt).
+                upcomingByKind[l.kind] = l
+            }
+        }
+
+        for (i, kind) in CATEGORY_ORDER.enumerated() {
+            let label = MODE_LABELS[kind] ?? kind
+            setSlot(currentSlotItems[i], lobby: currentByKind[kind],
+                    placeholder: "    (no \(label) lobby)")
+            setSlot(upcomingSlotItems[i], lobby: upcomingByKind[kind],
+                    placeholder: "    (no upcoming \(label))")
+        }
+
+        dismissAlertItem.isEnabled = !activeAlerts.isEmpty
+        soundToggleItem.state = playSound ? .on : .off
     }
 
-    private func addDisabled(_ text: String) {
-        let it = NSMenuItem(title: text, action: nil, keyEquivalent: "")
-        it.isEnabled = false
-        menu.addItem(it)
-    }
-
-    private func addLobbyRows(_ header: String, _ group: [Lobby]) {
-        let h = NSMenuItem(title: header, action: nil, keyEquivalent: "")
-        h.isEnabled = false
-        menu.addItem(h)
-
-        if group.isEmpty {
-            let e = NSMenuItem(title: "    (none)", action: nil, keyEquivalent: "")
-            e.isEnabled = false
-            menu.addItem(e)
+    private func setSlot(_ item: NSMenuItem, lobby: Lobby?, placeholder: String) {
+        guard let l = lobby else {
+            item.title = placeholder
+            item.representedObject = nil
+            item.isEnabled = false
             return
         }
-        for lob in group {
-            let countdown = formatCountdown(lob.startsAt, serverTime) ?? ""
-            let star = lobbyMatches(lob) ? "★ " : "   "
-            var title = "\(star)\(lob.gameMap)  ·  \(lob.gameMode)  ·  \(lob.numClients)p"
-            if !countdown.isEmpty { title += "  ·  \(countdown)" }
-            let it = NSMenuItem(
-                title: title,
-                action: #selector(openOpenFront(_:)),
-                keyEquivalent: ""
+        let countdown = formatCountdown(l.startsAt, serverTime) ?? ""
+        let star = lobbyMatches(l) ? "★ " : "   "
+        var t = "\(star)\(l.gameMap)  ·  \(l.gameMode)  ·  \(l.numClients)p"
+        if !countdown.isEmpty { t += "  ·  \(countdown)" }
+        item.title = t
+        item.representedObject = l.gameID
+        item.isEnabled = true
+    }
+
+    /// Fully rebuild the "Watched maps" submenu. Called only on watchlist
+    /// changes (user action), never from a lobby tick, so it can't steal
+    /// focus from the live menu.
+    func rebuildWatchedSubmenu() {
+        watchedParentItem.title = "Watched maps (\(watched.count))"
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+
+        if !watched.isEmpty {
+            let h = NSMenuItem(
+                title: "— Selected —", action: nil, keyEquivalent: ""
             )
-            it.target = self
-            it.representedObject = lob.gameID
-            menu.addItem(it)
+            h.isEnabled = false
+            sub.addItem(h)
+            for m in watched.keys.sorted() {
+                addMapItem(into: sub, map: m)
+            }
+            sub.addItem(.separator())
         }
+
+        let ph = NSMenuItem(title: "— Popular —", action: nil, keyEquivalent: "")
+        ph.isEnabled = false
+        sub.addItem(ph)
+        for m in POPULAR_MAPS {
+            addMapItem(into: sub, map: m)
+        }
+
+        sub.addItem(.separator())
+        let ah = NSMenuItem(title: "— All maps —", action: nil, keyEquivalent: "")
+        ah.isEnabled = false
+        sub.addItem(ah)
+        for m in ALL_MAPS.sorted() {
+            addMapItem(into: sub, map: m)
+        }
+
+        watchedParentItem.submenu = sub
     }
 
     private func addMapItem(into parent: NSMenu, map mapName: String) {
@@ -593,7 +656,8 @@ final class AppDelegate: NSObject,
         watched[m] = "any"
         persistWatchlist()
         reconcileAlerts()
-        rebuildMenu()
+        rebuildWatchedSubmenu()
+        updateMenuFromState()
     }
 
     @objc func unwatchMap(_ sender: NSMenuItem) {
@@ -601,7 +665,8 @@ final class AppDelegate: NSObject,
         watched.removeValue(forKey: m)
         persistWatchlist()
         reconcileAlerts()
-        rebuildMenu()
+        rebuildWatchedSubmenu()
+        updateMenuFromState()
     }
 
     @objc func setMapMode(_ sender: NSMenuItem) {
@@ -611,13 +676,14 @@ final class AppDelegate: NSObject,
         watched[pair[0]] = pair[1]
         persistWatchlist()
         reconcileAlerts()
-        rebuildMenu()
+        rebuildWatchedSubmenu()
+        updateMenuFromState()
     }
 
     @objc func toggleSound(_ sender: NSMenuItem) {
         playSound.toggle()
         persistWatchlist()
-        rebuildMenu()
+        updateMenuFromState()
     }
 
     @objc func sendTestNotification(_ sender: NSMenuItem) {
@@ -630,7 +696,7 @@ final class AppDelegate: NSObject,
 
     @objc func dismissAlert(_ sender: NSMenuItem) {
         activeAlerts.removeAll()
-        rebuildMenu()
+        updateMenuFromState()
     }
 
     @objc func openOpenFront(_ sender: NSMenuItem) {

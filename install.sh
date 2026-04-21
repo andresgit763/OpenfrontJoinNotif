@@ -33,7 +33,12 @@ chmod 644 "$PLIST_DEST"
 
 # 4. (Re)load.
 launchctl bootout "gui/$UID/$PLIST_LABEL" >/dev/null 2>&1 || true
-launchctl bootstrap "gui/$UID" "$PLIST_DEST"
+# launchd's deregistration is async; give it a beat before bootstrapping,
+# otherwise rapid reinstalls can hit "Input/output error (5)".
+for _ in 1 2 3; do
+    if launchctl bootstrap "gui/$UID" "$PLIST_DEST" 2>/dev/null; then break; fi
+    sleep 1
+done
 launchctl kickstart -k "gui/$UID/$PLIST_LABEL"
 
 echo
