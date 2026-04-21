@@ -1,0 +1,12 @@
+# Build output
+dist/
+*.app
+
+# Editor / OS junk
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Installed LaunchAgent (user-local)
+com.openfrontmod.mapwatch.plist
