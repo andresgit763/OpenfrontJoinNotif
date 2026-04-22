@@ -10,6 +10,7 @@
 
 import AppKit
 import Foundation
+import UserNotifications
 
 // MARK: - Constants
 
@@ -142,7 +143,11 @@ func appleScriptQuote(_ s: String) -> String {
     return "\"\(esc)\""
 }
 
-func fireNotification(title: String, body: String) {
+/// Fallback-only path for when UNUserNotificationCenter isn't authorised.
+/// Still lands as a Notification Center banner, but attributed to
+/// "Script Editor"/"osascript" and clicks open that app — we prefer the
+/// native path when available (see AppDelegate.fireNotification).
+func fireOsascriptNotification(title: String, body: String) {
     let script =
         "display notification \(appleScriptQuote(body)) "
         + "with title \(appleScriptQuote(title)) sound name \"Glass\""
@@ -158,7 +163,8 @@ func fireNotification(title: String, body: String) {
 
 final class AppDelegate: NSObject,
                          NSApplicationDelegate,
-                         URLSessionWebSocketDelegate {
+                         URLSessionWebSocketDelegate,
+                         UNUserNotificationCenterDelegate {
 
     var statusItem: NSStatusItem!
     var menu: NSMenu!
@@ -186,6 +192,11 @@ final class AppDelegate: NSObject,
     // the last message time and force-reconnects if it's been too long.
     var lastMessageAt: Date = Date.distantPast
     var watchdogTimer: Timer?
+
+    /// Set after UNUserNotificationCenter.requestAuthorization returns.
+    /// When false we fall back to osascript, which still delivers a banner
+    /// but attributes it to Script Editor — clicks then open that, not us.
+    var notificationsAuthorized = false
 
     // Stable menu-item references so every tick mutates titles in place
     // instead of tearing the menu down. Rebuilding (removeAllItems() +
@@ -224,7 +235,81 @@ final class AppDelegate: NSObject,
         startFlashTimer()
         startWatchdog()
         registerSleepWakeHandlers()
+        setupNotifications()
         connectWebSocket()
+    }
+
+    // MARK: Notifications
+
+    /// Use the native notification API so banners are attributed to our app
+    /// (rather than "Script Editor" via osascript) and a click routes
+    /// through our delegate — we then open openfront.io.
+    func setupNotifications() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            DispatchQueue.main.async {
+                self.notificationsAuthorized = granted && error == nil
+                if let error = error {
+                    NSLog("[ofmw] notification auth error: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func fireNotification(title: String, body: String) {
+        if notificationsAuthorized {
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            // Sound is already driven by the user's "Play sound on alert"
+            // toggle via NSSound; leave the notification silent to avoid
+            // double-playing.
+            content.userInfo = ["openURL": OPENFRONT_URL.absoluteString]
+            let req = UNNotificationRequest(
+                identifier: UUID().uuidString,
+                content: content,
+                trigger: nil
+            )
+            UNUserNotificationCenter.current().add(req) { err in
+                if let err = err {
+                    NSLog("[ofmw] notify add failed, falling back: \(err.localizedDescription)")
+                    fireOsascriptNotification(title: title, body: body)
+                }
+            }
+        } else {
+            fireOsascriptNotification(title: title, body: body)
+        }
+    }
+
+    // UNUserNotificationCenterDelegate
+
+    /// Called on Apple Silicon / modern macOS when a notification arrives
+    /// while our app is "frontmost" (menu-bar apps are effectively always
+    /// so). Without this override, the banner would be swallowed.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler:
+            @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list])
+    }
+
+    /// Called when the user clicks the notification banner. Route it to
+    /// openfront.io instead of "activating" our menu-bar app (which would
+    /// do nothing visible anyway).
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        if let urlStr = response.notification.request.content
+                        .userInfo["openURL"] as? String,
+           let url = URL(string: urlStr) {
+            NSWorkspace.shared.open(url)
+        }
+        completionHandler()
     }
 
     // MARK: Sleep / wake handling

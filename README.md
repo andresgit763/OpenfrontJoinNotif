@@ -57,13 +57,21 @@ any lobby opens openfront.io in your default browser.
 
 ### Notifications — one-time setup
 
-The first time the app fires a notification macOS will ask you (via
-*System Settings → Notifications*) whether to allow them. They're
-attributed to **Script Editor** / **osascript** in Settings (that's how
-the `display notification` AppleScript dispatch works) — it's still
-your notification, just listed under that name.
+The first time you launch the app, macOS pops up
+*"OpenFront Map Watch" would like to send you notifications*. Click
+**Allow**. If you miss the prompt, grant it manually under
+*System Settings → Notifications → OpenFront Map Watch*.
+
+Notifications are attributed to the app itself, and **clicking a
+notification opens openfront.io** in your default browser — you can
+jump straight into the lobby without reaching for the menu bar.
 
 You can fire one on demand via the menu: **Send test notification**.
+
+(If you decline the permission prompt, the app silently falls back to
+the AppleScript `display notification` path. Banners will still appear,
+but they'll be attributed to "Script Editor" and clicking them opens
+Script Editor instead of openfront.io.)
 
 ### Config
 
