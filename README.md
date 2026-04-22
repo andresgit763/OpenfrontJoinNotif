@@ -16,9 +16,10 @@ rotation — so you can jump in before the lobby fills up.
 ## Requirements
 
 - macOS **13 Ventura** or later (Apple Silicon or Intel)
-- Xcode Command Line Tools (for the one-time build — installs with
-  `xcode-select --install` and is ~1 GB, but you can delete it after
-  building if you want)
+- Xcode Command Line Tools for the one-time build (Swift compiler).
+  You don't need to install these manually — `install.sh` will trigger
+  the standard macOS installer dialog if they're missing, then wait
+  for you to finish. ~1 GB, can be removed later if you want.
 
 No App Store, no signing, no third-party dependencies. Pure Swift + AppKit.
 
@@ -32,10 +33,12 @@ cd OpenfrontJoinNotif
 
 That script:
 
-1. Compiles `mapwatch.swift` with `swiftc`.
-2. Installs the `.app` bundle into `~/Applications/`.
-3. Registers a user LaunchAgent so it autostarts at login.
-4. Starts it immediately — look for **`OF`** in the top-right menu bar.
+1. Checks for the Swift compiler. If missing, pops up macOS's
+   Command Line Tools installer and waits for you to finish.
+2. Compiles `mapwatch.swift`.
+3. Installs the `.app` bundle into `~/Applications/`.
+4. Registers a user LaunchAgent so it autostarts at login.
+5. Starts it immediately — look for **`OF`** in the top-right menu bar.
 
 ## Using it
 

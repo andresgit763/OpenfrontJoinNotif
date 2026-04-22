@@ -10,6 +10,26 @@
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# 0. Make sure Xcode Command Line Tools are present — needed for swiftc.
+# macOS *would* pop up the installer automatically on first xcrun call,
+# but the shell process returns before the user clicks Install, so we'd
+# crash. Prompt the user up front and wait for them to finish.
+if ! /usr/bin/xcrun --find swiftc >/dev/null 2>&1; then
+    echo "==> Xcode Command Line Tools are required but not installed."
+    echo "    Triggering the installer dialog now..."
+    /usr/bin/xcode-select --install >/dev/null 2>&1 || true
+    echo
+    echo "    A macOS dialog should be visible. Click 'Install',"
+    echo "    accept the license, and wait for the download to finish"
+    echo "    (~5-15 minutes, roughly 1 GB)."
+    echo
+    read -rp "Press Enter here AFTER the install has completed... "
+    if ! /usr/bin/xcrun --find swiftc >/dev/null 2>&1; then
+        echo "swiftc still not found. Try running './install.sh' again." >&2
+        exit 1
+    fi
+fi
 APP_NAME="OpenFront Map Watch"
 INSTALL_DIR="$HOME/Applications"
 APP="$INSTALL_DIR/$APP_NAME.app"
