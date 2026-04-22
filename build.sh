@@ -47,5 +47,14 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+# Ad-hoc code-sign the whole bundle. Without this, macOS's notification
+# system rejects requestAuthorization with UNErrorDomain error 1 because
+# the bundle's Info.plist isn't cryptographically bound to the binary —
+# the Swift linker's auto-adhoc signature alone isn't enough. Ad-hoc
+# signing is free, needs no Apple Developer account, and satisfies the
+# OS's "is this a real app" check for notifications.
+echo "==> Ad-hoc code-signing"
+codesign --force --deep --sign - "$APP" >/dev/null
+
 echo "==> Built: $APP"
 ls -l "$APP/Contents/MacOS/OpenFrontMapWatch"

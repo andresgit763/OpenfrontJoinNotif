@@ -250,9 +250,7 @@ final class AppDelegate: NSObject,
         center.requestAuthorization(options: [.alert, .sound]) { granted, error in
             DispatchQueue.main.async {
                 self.notificationsAuthorized = granted && error == nil
-                if let error = error {
-                    NSLog("[ofmw] notification auth error: \(error.localizedDescription)")
-                }
+                NSLog("[ofmw] notification auth: granted=\(granted) error=\(error?.localizedDescription ?? "nil")")
             }
         }
     }
