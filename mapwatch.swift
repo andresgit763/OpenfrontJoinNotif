@@ -173,6 +173,20 @@ final class AppDelegate: NSObject,
     var task: URLSessionWebSocketTask?
     var reconnectAttempt = 0
 
+    /// Per-connection identity. Each time we start a new WebSocket we bump
+    /// this. Every receive-callback closure captures the ID it was registered
+    /// under and bails out if the current ID doesn't match — so stale
+    /// callbacks from cancelled tasks become no-ops instead of re-triggering
+    /// reconnects. (Earlier the same cancellation fanned out into 15k+
+    /// "cancelled" callbacks all racing to scheduleReconnect, which doubled
+    /// each cycle and DoS'd the user's Cloudflare rate-limit from their own
+    /// machine. Never again.)
+    var currentConnID: UInt64 = 0
+
+    /// Single-flight guard. Ensures only ONE delayed reconnect is in flight
+    /// at a time, no matter how many callers raced to schedule one.
+    var pendingReconnect = false
+
     var config = Config()
     var watched: [String: String] = [:]     // map -> mode filter
     var playSound = true
@@ -291,6 +305,7 @@ final class AppDelegate: NSObject,
         withCompletionHandler completionHandler:
             @escaping (UNNotificationPresentationOptions) -> Void
     ) {
+        NSLog("[ofmw] willPresent fired — returning [.banner, .list]")
         completionHandler([.banner, .list])
     }
 
@@ -326,6 +341,10 @@ final class AppDelegate: NSObject,
 
     @objc func systemWillSleep(_ note: Notification) {
         // Proactively drop the socket so it doesn't go zombie during sleep.
+        // Bump currentConnID so the doomed task's pending receive callback
+        // becomes a stale no-op when it fires — it must NOT kick off a
+        // reconnect storm while we're asleep.
+        currentConnID &+= 1
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         connected = false
@@ -334,6 +353,7 @@ final class AppDelegate: NSObject,
     @objc func systemDidWake(_ note: Notification) {
         // Reset backoff and reconnect immediately on wake.
         reconnectAttempt = 0
+        pendingReconnect = false
         connectWebSocket()
     }
 
@@ -353,6 +373,7 @@ final class AppDelegate: NSObject,
                 NSLog("[ofmw] stall detected — forcing reconnect")
                 self.lastMessageAt = .distantPast
                 self.reconnectAttempt = 0
+                self.pendingReconnect = false
                 self.connectWebSocket()
             }
         }
@@ -395,16 +416,31 @@ final class AppDelegate: NSObject,
         req.setValue(SAFARI_UA, forHTTPHeaderField: "User-Agent")
         req.setValue("https://openfront.io", forHTTPHeaderField: "Origin")
 
+        // Invalidate the previous connection's receive callbacks before
+        // starting a new one. Any cancelled/failed fires that land later
+        // will see a mismatched connID and bail quietly.
+        currentConnID &+= 1
+        let connID = currentConnID
+
         task?.cancel(with: .goingAway, reason: nil)
         let t = session.webSocketTask(with: req)
         task = t
+        pendingReconnect = false
         t.resume()
-        receiveMessage()
+        receiveMessage(on: t, connID: connID)
     }
 
-    func receiveMessage() {
-        task?.receive { [weak self] result in
+    /// Callbacks are bound to a specific (task, connID) pair. If by the
+    /// time the callback fires the current connection has moved on, we
+    /// return immediately — no log, no reconnect. This makes cancellation
+    /// idempotent and stops the reconnect-storm cascade.
+    func receiveMessage(on task: URLSessionWebSocketTask, connID: UInt64) {
+        task.receive { [weak self] result in
             guard let self else { return }
+            guard connID == self.currentConnID else {
+                // stale callback from a task we already abandoned
+                return
+            }
             switch result {
             case .failure(let err):
                 NSLog("[ofmw] recv error: \(err.localizedDescription)")
@@ -419,15 +455,22 @@ final class AppDelegate: NSObject,
                     }
                 @unknown default: break
                 }
-                self.receiveMessage()
+                self.receiveMessage(on: task, connID: connID)
             }
         }
     }
 
     func scheduleReconnect() {
+        // Single-flight: multiple callers racing here collapse into one
+        // scheduled reconnect. Without this guard, duplicate triggers
+        // (e.g. failure callback + didCloseWith delegate) multiplied
+        // into exponential reconnect growth.
+        if pendingReconnect { return }
+        pendingReconnect = true
         reconnectAttempt += 1
-        // Exponential backoff, capped at 30 s.
+        // Exponential backoff, 1s/2s/4s/8s/16s, capped at 30s.
         let delay = min(pow(2.0, Double(reconnectAttempt - 1)), 30.0)
+        NSLog("[ofmw] reconnect scheduled in \(delay)s (attempt \(reconnectAttempt))")
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.connectWebSocket()
         }
@@ -442,6 +485,7 @@ final class AppDelegate: NSObject,
     ) {
         connected = true
         reconnectAttempt = 0
+        pendingReconnect = false
     }
 
     func urlSession(
@@ -450,8 +494,10 @@ final class AppDelegate: NSObject,
         didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
         reason: Data?
     ) {
+        // Reconnect is driven from the receive callback's .failure branch
+        // only. Calling scheduleReconnect here too caused duplicate
+        // triggers per cancellation — the very bug that storm'd 15k sockets.
         connected = false
-        scheduleReconnect()
     }
 
     // MARK: Message handling
@@ -482,6 +528,9 @@ final class AppDelegate: NSObject,
         currentLobbies = lobbies
         connected = true
         lastMessageAt = Date()
+        // Healthy frames → backoff is no longer warranted.
+        reconnectAttempt = 0
+        pendingReconnect = false
 
         reconcileAlerts()
         // In-place mutation only — never re-adds/removes items, so the
