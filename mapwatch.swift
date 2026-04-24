@@ -164,8 +164,7 @@ func fireOsascriptNotification(title: String, body: String) {
 final class AppDelegate: NSObject,
                          NSApplicationDelegate,
                          URLSessionWebSocketDelegate,
-                         UNUserNotificationCenterDelegate,
-                         NSMenuDelegate {
+                         UNUserNotificationCenterDelegate {
 
     var statusItem: NSStatusItem!
     var menu: NSMenu!
@@ -213,15 +212,6 @@ final class AppDelegate: NSObject,
     /// but attributes it to Script Editor — clicks then open that, not us.
     var notificationsAuthorized = false
 
-    /// True while the popup menu is being displayed. Mutating menu items
-    /// while AppKit is laying out the popup causes the constraint system
-    /// to throw NSGenericException after enough re-layout passes — the
-    /// crash observed on real usage was:
-    ///   "The window has been marked as needing another Layout Window
-    ///    pass, but it has already had more Layout Window passes than
-    ///    there are views in the window."
-    /// Gate item mutations on this flag; catch up in menuDidClose(_:).
-    var menuIsOpen = false
 
     // Stable menu-item references so every tick mutates titles in place
     // instead of tearing the menu down. Rebuilding (removeAllItems() +
@@ -403,22 +393,8 @@ final class AppDelegate: NSObject,
         )
         menu = NSMenu()
         menu.autoenablesItems = false
-        menu.delegate = self
         statusItem.menu = menu
         updateTitle()
-    }
-
-    // MARK: NSMenuDelegate — freeze item mutations while the menu is shown
-
-    func menuWillOpen(_ menu: NSMenu) {
-        menuIsOpen = true
-    }
-
-    func menuDidClose(_ menu: NSMenu) {
-        menuIsOpen = false
-        // Any ticks that landed while the menu was open were suppressed;
-        // apply the latest state now that it's safe to mutate items.
-        updateMenuFromState()
     }
 
     func updateTitle() {
@@ -724,13 +700,16 @@ final class AppDelegate: NSObject,
         menu.addItem(quit)
     }
 
-    /// Mutate item titles / enabled state from the current state. Safe to
-    /// call any time: if the menu is currently open we only refresh the
-    /// status-bar title (which is a separate view) and defer item
-    /// mutations until menuDidClose.
+    /// Mutate item titles / enabled state from the current state. Items
+    /// update in place (no add/remove) so the open menu stays interactive
+    /// and the user's cursor doesn't lose its target. We intentionally
+    /// don't gate on menuIsOpen — live updates while the menu is shown are
+    /// the whole point of the live-countdown UX. The (rare) NSPopupMenu
+    /// layout-recursion crash we saw once in 26h uptime is mitigated by
+    /// dispatching the mutations to the main queue so they never run
+    /// inside AppKit's own layout pass; see below.
     func updateMenuFromState() {
         updateTitle()
-        if menuIsOpen { return }
 
         if !activeAlerts.isEmpty {
             statusHeaderItem.title =
