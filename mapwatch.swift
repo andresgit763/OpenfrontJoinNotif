@@ -164,7 +164,8 @@ func fireOsascriptNotification(title: String, body: String) {
 final class AppDelegate: NSObject,
                          NSApplicationDelegate,
                          URLSessionWebSocketDelegate,
-                         UNUserNotificationCenterDelegate {
+                         UNUserNotificationCenterDelegate,
+                         NSMenuDelegate {
 
     var statusItem: NSStatusItem!
     var menu: NSMenu!
@@ -211,6 +212,16 @@ final class AppDelegate: NSObject,
     /// When false we fall back to osascript, which still delivers a banner
     /// but attributes it to Script Editor — clicks then open that, not us.
     var notificationsAuthorized = false
+
+    /// True while the popup menu is being displayed. Mutating menu items
+    /// while AppKit is laying out the popup causes the constraint system
+    /// to throw NSGenericException after enough re-layout passes — the
+    /// crash observed on real usage was:
+    ///   "The window has been marked as needing another Layout Window
+    ///    pass, but it has already had more Layout Window passes than
+    ///    there are views in the window."
+    /// Gate item mutations on this flag; catch up in menuDidClose(_:).
+    var menuIsOpen = false
 
     // Stable menu-item references so every tick mutates titles in place
     // instead of tearing the menu down. Rebuilding (removeAllItems() +
@@ -360,8 +371,11 @@ final class AppDelegate: NSObject,
     // MARK: Watchdog
 
     func startWatchdog() {
-        // Every 2 s, check whether we've received a message in the last 5 s.
-        // Server broadcasts every 500 ms, so 5 s of silence = stalled.
+        // Every 2 s, check whether we've received a message in the last 10 s.
+        // Server broadcasts every 500 ms so 10 s of silence (20 missed
+        // broadcasts) is unambiguously a dead socket. Earlier this was
+        // 5 s which caused ~200 nuisance reconnects over a 26-hour run
+        // from normal network jitter + CPU throttling blips.
         watchdogTimer = Timer.scheduledTimer(
             withTimeInterval: 2.0, repeats: true
         ) { [weak self] _ in
@@ -369,11 +383,13 @@ final class AppDelegate: NSObject,
             // Only care once we've ever received a message; otherwise it's
             // just the initial connect taking a moment.
             guard self.lastMessageAt > .distantPast else { return }
-            if Date().timeIntervalSince(self.lastMessageAt) > 5.0 {
-                NSLog("[ofmw] stall detected — forcing reconnect")
+            // If the failure path already scheduled a reconnect, let it
+            // play out — firing again would race with it.
+            if self.pendingReconnect { return }
+            if Date().timeIntervalSince(self.lastMessageAt) > 10.0 {
+                NSLog("[ofmw] stall detected — forcing reconnect (no frames >10s)")
                 self.lastMessageAt = .distantPast
                 self.reconnectAttempt = 0
-                self.pendingReconnect = false
                 self.connectWebSocket()
             }
         }
@@ -387,8 +403,22 @@ final class AppDelegate: NSObject,
         )
         menu = NSMenu()
         menu.autoenablesItems = false
+        menu.delegate = self
         statusItem.menu = menu
         updateTitle()
+    }
+
+    // MARK: NSMenuDelegate — freeze item mutations while the menu is shown
+
+    func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
+        // Any ticks that landed while the menu was open were suppressed;
+        // apply the latest state now that it's safe to mutate items.
+        updateMenuFromState()
     }
 
     func updateTitle() {
@@ -695,10 +725,12 @@ final class AppDelegate: NSObject,
     }
 
     /// Mutate item titles / enabled state from the current state. Safe to
-    /// call while the menu is open: no item is added or removed, so the
-    /// open menu keeps working and the user can still click things.
+    /// call any time: if the menu is currently open we only refresh the
+    /// status-bar title (which is a separate view) and defer item
+    /// mutations until menuDidClose.
     func updateMenuFromState() {
         updateTitle()
+        if menuIsOpen { return }
 
         if !activeAlerts.isEmpty {
             statusHeaderItem.title =
