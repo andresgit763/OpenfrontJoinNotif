@@ -187,6 +187,16 @@ final class AppDelegate: NSObject,
     /// at a time, no matter how many callers raced to schedule one.
     var pendingReconnect = false
 
+    /// Heartbeat timer. Cloudflare's WebSocket idle timeout is 100 s on
+    /// Free/Pro plans and isn't configurable — without client pings, NAT
+    /// intermediaries silently drop the TCP binding after 30-100 s of no
+    /// outbound traffic even while the server is still pushing frames in
+    /// our direction. The symptom was "menu stuck for 10 s every minute
+    /// or so" (watchdog picking up the slack). Sending a WebSocket PING
+    /// frame every 25 s keeps the path alive and also gives us a fast
+    /// dead-connection signal via the pong handler's error callback.
+    var pingTimer: Timer?
+
     var config = Config()
     var watched: [String: String] = [:]     // map -> mode filter
     var playSound = true
@@ -249,9 +259,36 @@ final class AppDelegate: NSObject,
         updateMenuFromState()
         startFlashTimer()
         startWatchdog()
+        startPingTimer()
         registerSleepWakeHandlers()
         setupNotifications()
         connectWebSocket()
+    }
+
+    // MARK: Ping heartbeat (primary keepalive)
+
+    func startPingTimer() {
+        // Every 25 s: send a WebSocket PING. If we don't get a PONG back
+        // (handler receives a non-nil error), the connection is dead
+        // regardless of what the OS TCP stack thinks — force a reconnect.
+        pingTimer = Timer.scheduledTimer(
+            withTimeInterval: 25.0, repeats: true
+        ) { [weak self] _ in
+            guard let self, let t = self.task else { return }
+            let myConnID = self.currentConnID
+            t.sendPing { [weak self] error in
+                guard let self else { return }
+                // If we've moved on to a new connection, ignore this pong.
+                guard myConnID == self.currentConnID else { return }
+                if let error = error {
+                    NSLog("[ofmw] ping pong failed: \(error.localizedDescription) — reconnecting")
+                    if !self.pendingReconnect {
+                        self.reconnectAttempt = 0
+                        self.connectWebSocket()
+                    }
+                }
+            }
+        }
     }
 
     // MARK: Notifications
@@ -416,6 +453,7 @@ final class AppDelegate: NSObject,
 
     func connectWebSocket() {
         let worker = Int.random(in: 0..<WORKER_COUNT)
+        NSLog("[ofmw] connecting to worker w\(worker)")
         guard let url = URL(string: "wss://openfront.io/w\(worker)/lobbies")
         else { return }
         var req = URLRequest(url: url)
@@ -489,6 +527,7 @@ final class AppDelegate: NSObject,
         webSocketTask: URLSessionWebSocketTask,
         didOpenWithProtocol protocol: String?
     ) {
+        NSLog("[ofmw] connection open")
         connected = true
         reconnectAttempt = 0
         pendingReconnect = false
