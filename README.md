@@ -21,7 +21,8 @@ rotation — so you can jump in before the lobby fills up.
   the standard macOS installer dialog if they're missing, then wait
   for you to finish. ~1 GB, can be removed later if you want.
 
-No App Store, no signing, no third-party dependencies. Pure Swift + AppKit.
+No App Store and no paid signing. The app is native Swift + AppKit and uses
+macOS's built-in JavaScriptCore to run the OpenFront-compatible lobby decoder.
 
 ## Install
 
@@ -53,7 +54,8 @@ That script:
 
 The menu also shows live **Current lobbies** and **Upcoming lobbies**
 so you can peek at what's running without opening a browser. Clicking
-any lobby opens openfront.io in your default browser.
+any lobby opens openfront.io in **Safari** (Safari's WebKit is the
+lightest browser engine on macOS, so the lobby loads fastest there).
 
 ### Notifications — one-time setup
 
@@ -63,8 +65,8 @@ The first time you launch the app, macOS pops up
 *System Settings → Notifications → OpenFront Map Watch*.
 
 Notifications are attributed to the app itself, and **clicking a
-notification opens openfront.io** in your default browser — you can
-jump straight into the lobby without reaching for the menu bar.
+notification opens openfront.io in Safari** — you can jump straight
+into the lobby without reaching for the menu bar.
 
 You can fire one on demand via the menu: **Send test notification**.
 
@@ -104,6 +106,15 @@ git pull
 ./install.sh     # recompiles + reloads
 ```
 
+Maintainers updating for a new OpenFront wire schema should check out the
+commit shown in the deployed site's `window.BOOTSTRAP_CONFIG.gitCommit`, run
+`npm run inst` in that OpenFrontIO checkout, then rebuild the pinned decoder:
+
+```bash
+node scripts/build-lobby-decoder.mjs /path/to/OpenFrontIO <git-commit>
+./install.sh
+```
+
 ## Uninstall
 
 ```bash
@@ -118,15 +129,23 @@ that pushes the public-lobby list every 500 ms. The site itself
 consumes that feed in its React client, which is why the front page
 shows the current FFA / Team / Special lobby.
 
+Since OpenFront commit `0cb90ccb`, those frames use OpenFront's positional
+`zbin` protocol rather than JSON. There is deliberately no wire-version byte
+or fallback. Map Watch therefore bundles OpenFront's own lobby decoder at the
+exact production commit instead of guessing enum ordinals. It handles both
+structural `full` snapshots and lightweight player-count updates. If a future
+deployment changes the schema, the menu reports **OpenFront protocol update
+required** and keeps the socket calm instead of entering a reconnect storm.
+
 Cloudflare protects that WebSocket — it rejects most generic HTTP
 clients. But its gate is **TLS client fingerprint (JA3/JA4)**, not a
 cookie. Apple's `URLSessionWebSocketTask` uses SecureTransport — the
 same TLS stack Safari uses — so the connection goes straight through
 without a browser engine, a `cf_clearance` cookie, or any JS challenge.
 
-That's the whole trick. The rest of the app is just an `NSStatusItem`,
-a `Codable` for the JSON lobby schema, and a small reconciler that
-decides when to notify. See `mapwatch.swift` — ~450 lines.
+The rest of the app is an `NSStatusItem`, small `Codable` display models, and a
+reconciler that decides when to notify. No WebView, Python, Node, or Electron
+process runs after installation.
 
 ## Measured footprint
 

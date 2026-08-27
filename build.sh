@@ -13,11 +13,24 @@ APP="$DIST/$APP_NAME.app"
 
 # Clean.
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 # Compile.
 echo "==> Building Swift binary"
-xcrun swiftc -O -o "$APP/Contents/MacOS/OpenFrontMapWatch" "$HERE/mapwatch.swift"
+xcrun swiftc -O \
+    -framework JavaScriptCore \
+    -o "$APP/Contents/MacOS/OpenFrontMapWatch" \
+    "$HERE/mapwatch.swift"
+
+# OpenFront changed the lobby WebSocket to its private zbin wire format in
+# August 2026. This is a browser-targeted bundle of OpenFront's own decoder,
+# pinned to the production commit recorded in THIRD_PARTY_NOTICES.md.
+if [[ ! -f "$HERE/lobby-decoder.js" ]]; then
+    echo "Missing lobby-decoder.js; cannot decode OpenFront lobby frames." >&2
+    exit 1
+fi
+cp "$HERE/lobby-decoder.js" "$APP/Contents/Resources/lobby-decoder.js"
+cp "$HERE/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 
 # Info.plist.
 cat > "$APP/Contents/Info.plist" <<'PLIST'

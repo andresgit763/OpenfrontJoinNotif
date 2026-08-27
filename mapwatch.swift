@@ -10,12 +10,30 @@
 
 import AppKit
 import Foundation
+import JavaScriptCore
 import UserNotifications
 
 // MARK: - Constants
 
 let OPENFRONT_URL = URL(string: "https://openfront.io/")!
 let WORKER_COUNT = 20
+let SAFARI_BUNDLE_ID = "com.apple.Safari"
+
+// Open `url` in Safari specifically, not the user's default browser.
+// We resolve Safari via its bundle identifier (works regardless of where
+// the user has moved Safari.app) and use NSWorkspace's explicit-app open
+// API. If Safari isn't installed for some reason, fall back to the
+// default browser so a click is never a dead end.
+func openInSafari(_ url: URL) {
+    let ws = NSWorkspace.shared
+    if let safari = ws.urlForApplication(withBundleIdentifier: SAFARI_BUNDLE_ID) {
+        let cfg = NSWorkspace.OpenConfiguration()
+        ws.open([url], withApplicationAt: safari, configuration: cfg,
+                completionHandler: nil)
+    } else {
+        ws.open(url)
+    }
+}
 
 let MODES = ["any", "ffa", "team", "special"]
 let MODE_LABELS: [String: String] = [
@@ -31,22 +49,37 @@ let MODE_LABELS: [String: String] = [
 let CATEGORY_ORDER = ["ffa", "team", "special"]
 
 // Mirrors src/core/game/Game.ts :: GameMapType in the OpenFrontIO repo.
+// Generated from OpenFrontIO's Maps.gen.ts at the decoder commit bundled with
+// this app. Keep canonical spelling: map names are wire values and therefore
+// also the keys stored in the user's watchlist.
 let ALL_MAPS: [String] = [
-    "World", "Giant World Map", "Europe", "Europe Classic", "Mena",
-    "North America", "South America", "Oceania", "Black Sea", "Africa",
-    "Pangaea", "Asia", "Mars", "Britannia Classic", "Britannia",
-    "Gateway to the Atlantic", "Australia", "Iceland", "East Asia",
-    "Between Two Seas", "Faroe Islands", "Deglaciated Antarctica",
-    "Falkland Islands", "Baikal", "Halkidiki", "Strait of Gibraltar",
-    "Italia", "Japan", "Pluto", "Montreal", "New York City", "Achiran",
-    "Baikal Nuke Wars", "Four Islands", "Svalmel", "Gulf of St. Lawrence",
-    "Lisbon", "Manicouagan", "Lemnos", "Tourney 2 Teams", "Tourney 3 Teams",
-    "Tourney 4 Teams", "Tourney 8 Teams", "Passage", "Sierpinski", "The Box",
-    "Two Lakes", "Strait of Hormuz", "Surrounded", "Didier", "Didier France",
-    "Amazon River", "Bosphorus Straits", "Bering Strait", "Yenisei",
-    "Traders Dream", "Hawaii", "Alps", "Nile Delta", "Arctic", "San Francisco",
-    "Aegean", "MilkyWay", "Mediterranean", "Dyslexdria", "Great Lakes",
-    "Strait Of Malacca", "Luna", "Conakry", "Caucasus", "Bering Sea",
+    "Achiran", "Aegean", "Africa", "Alps", "Amazon River", "Antarctica",
+    "ArchipelagoSea", "Arctic", "Asia", "Australia", "Baikal",
+    "Baikal Nuke Wars", "Baja California", "Balkans", "Balkhash", "Baltics",
+    "Bering Sea", "Bering Strait", "Between Two Seas", "Black Sea",
+    "Bosphorus Straits", "Branching Paths", "Britannia", "Britannia Classic",
+    "Caribbean", "Caspian Sea", "Caucasus", "China", "Chopping Block",
+    "Clearwater Lakes", "Conakry", "Crimea", "Danish Straits",
+    "Deglaciated Antarctica", "Didier", "Didier France", "Dyslexdria",
+    "East Asia", "Europe", "Europe Classic", "Falkland Islands",
+    "Faroe Islands", "Finger Lakes", "Four Islands", "France",
+    "Gateway to the Atlantic", "Germany", "Giant World Map", "Great Lakes",
+    "Gulf Of Guinea", "Gulf of St. Lawrence", "Halkidiki", "Hawaii",
+    "Hecate Strait", "Hong Kong", "Iceland", "Indian Subcontinent",
+    "Irish Sea", "Italia", "Japan", "Juan De Fuca Strait", "Korea",
+    "Labyrinth", "Las Vegas Strip", "Lemnos", "Levant", "Lisbon",
+    "Los Angeles", "Luna", "Manicouagan", "Mare Nostrum", "Mars", "Mena",
+    "Middle East", "MilkyWay", "Mississippi River", "Montreal",
+    "More Than Luck", "New York City", "Nile Delta", "North America",
+    "Northwest Passage", "Oceania", "Onion", "Pangaea", "Passage", "Pluto",
+    "Russia", "San Francisco", "Scandinavia", "Sierpinski", "Sol",
+    "South America", "SoutheastAsia", "Strait of Gibraltar",
+    "Strait of Hormuz", "Strait Of Malacca", "Surrounded", "Svalmel",
+    "Taiwan Strait", "The Box", "Tierra Del Fuego", "Titan",
+    "Tourney 2 Teams", "Tourney 3 Teams", "Tourney 4 Teams",
+    "Tourney 8 Teams", "Traders Dream", "Two Lakes", "United States",
+    "Venice", "Vietnam", "Warship Warship", "World", "World Inverted",
+    "Yellow Sea", "Yenisei",
 ]
 
 let POPULAR_MAPS: [String] = [
@@ -114,15 +147,97 @@ struct PublicGames: Codable {
     let games: [String: [LobbyInfo]]
 }
 
+// OpenFront sends a structural `full` snapshot when a client connects (and
+// whenever lobby metadata changes), then lightweight `counts` frames between
+// those snapshots. JSONDecoder intentionally ignores fields we don't display.
+struct PublicLobbyMessage: Decodable {
+    let type: String
+    let serverTime: Int
+    let games: [String: [LobbyInfo]]?
+    let counts: [String: Int]?
+}
+
 // Normalized lobby used internally.
 struct Lobby {
     let kind: String       // "ffa" | "team" | "special"
     let gameID: String
     let gameMap: String
     let gameMode: String
-    let numClients: Int
+    var numClients: Int
     let startsAt: Int
-    let isCurrent: Bool    // index 0 of its category
+    var isCurrent: Bool    // index 0 of its category
+}
+
+enum LobbyDecoderError: LocalizedError {
+    case missingResource
+    case missingFunction
+    case javascript(String)
+    case invalidResult
+
+    var errorDescription: String? {
+        switch self {
+        case .missingResource:
+            return "lobby-decoder.js is missing from the app bundle"
+        case .missingFunction:
+            return "the bundled OpenFront decoder did not initialize"
+        case .javascript(let message):
+            return "OpenFront decoder error: \(message)"
+        case .invalidResult:
+            return "the OpenFront decoder returned no JSON"
+        }
+    }
+}
+
+/// Hosts OpenFront's own zbin lobby decoder in macOS JavaScriptCore. The wire
+/// format is positional and intentionally has no version byte, so attempting
+/// to duplicate it with byte scans or hard-coded enum ordinals is unsafe.
+final class LobbyFrameDecoder {
+    private let context: JSContext
+    private var exceptionMessage: String?
+    private(set) var openFrontCommit = "unknown"
+
+    init() throws {
+        guard let scriptURL = Bundle.main.url(
+            forResource: "lobby-decoder", withExtension: "js"
+        ) else { throw LobbyDecoderError.missingResource }
+
+        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+        guard let context = JSContext() else {
+            throw LobbyDecoderError.missingFunction
+        }
+        self.context = context
+        context.exceptionHandler = { [weak self] _, exception in
+            self?.exceptionMessage = exception?.toString() ?? "unknown exception"
+        }
+        context.evaluateScript(script)
+        if let message = exceptionMessage {
+            throw LobbyDecoderError.javascript(message)
+        }
+        guard let function = context.objectForKeyedSubscript("decodeLobbyFrame"),
+              !function.isUndefined
+        else { throw LobbyDecoderError.missingFunction }
+
+        openFrontCommit = context
+            .objectForKeyedSubscript("OPENFRONT_DECODER_COMMIT")?
+            .toString() ?? "unknown"
+    }
+
+    func decode(_ data: Data) throws -> Data {
+        exceptionMessage = nil
+        guard let function = context.objectForKeyedSubscript("decodeLobbyFrame"),
+              !function.isUndefined
+        else { throw LobbyDecoderError.missingFunction }
+
+        let bytes = data.map { NSNumber(value: $0) }
+        let value = function.call(withArguments: [bytes])
+        if let message = exceptionMessage {
+            throw LobbyDecoderError.javascript(message)
+        }
+        guard let json = value?.toString(),
+              let result = json.data(using: .utf8)
+        else { throw LobbyDecoderError.invalidResult }
+        return result
+    }
 }
 
 // MARK: - Utility
@@ -171,6 +286,7 @@ final class AppDelegate: NSObject,
 
     var session: URLSession!
     var task: URLSessionWebSocketTask?
+    var lobbyDecoder: LobbyFrameDecoder?
     var reconnectAttempt = 0
 
     /// Per-connection identity. Each time we start a new WebSocket we bump
@@ -204,6 +320,9 @@ final class AppDelegate: NSObject,
     var currentLobbies: [Lobby] = []
     var serverTime: Int = 0
     var connected = false
+    var protocolError: String?
+    var consecutiveDecodeFailures = 0
+    var hasLoggedFeedReady = false
 
     var activeAlerts: [String: String] = [:]   // gameID -> map (for flash title)
     var prevAlertState: [String: Bool] = [:]   // gameID -> wasCurrent last tick
@@ -252,6 +371,16 @@ final class AppDelegate: NSObject,
             delegate: self,
             delegateQueue: OperationQueue.main
         )
+
+        do {
+            lobbyDecoder = try LobbyFrameDecoder()
+            NSLog(
+                "[ofmw] loaded OpenFront lobby decoder at commit \(lobbyDecoder!.openFrontCommit)"
+            )
+        } catch {
+            protocolError = error.localizedDescription
+            NSLog("[ofmw] decoder initialization failed: \(error.localizedDescription)")
+        }
 
         buildStatusItem()
         buildMenuStructure()
@@ -358,7 +487,7 @@ final class AppDelegate: NSObject,
         if let urlStr = response.notification.request.content
                         .userInfo["openURL"] as? String,
            let url = URL(string: urlStr) {
-            NSWorkspace.shared.open(url)
+            openInSafari(url)
         }
         completionHandler()
     }
@@ -452,6 +581,11 @@ final class AppDelegate: NSObject,
     // MARK: WebSocket
 
     func connectWebSocket() {
+        guard lobbyDecoder != nil else {
+            connected = false
+            updateMenuFromState()
+            return
+        }
         let worker = Int.random(in: 0..<WORKER_COUNT)
         NSLog("[ofmw] connecting to worker w\(worker)")
         guard let url = URL(string: "wss://openfront.io/w\(worker)/lobbies")
@@ -493,10 +627,7 @@ final class AppDelegate: NSObject,
             case .success(let message):
                 switch message {
                 case .string(let s): self.handleMessage(s)
-                case .data(let d):
-                    if let s = String(data: d, encoding: .utf8) {
-                        self.handleMessage(s)
-                    }
+                case .data(let d): self.handleBinaryMessage(d)
                 @unknown default: break
                 }
                 self.receiveMessage(on: task, connID: connID)
@@ -549,15 +680,28 @@ final class AppDelegate: NSObject,
 
     func handleMessage(_ s: String) {
         guard let data = s.data(using: .utf8) else { return }
-        guard let pub = try? JSONDecoder().decode(PublicGames.self, from: data)
-        else { return }
+        // Retain compatibility with pre-zbin servers. A full lobby message has
+        // a `type` field; the older payload was the PublicGames body directly.
+        if let message = try? JSONDecoder().decode(
+            PublicLobbyMessage.self, from: data
+        ) {
+            applyLobbyMessage(message)
+        } else if let pub = try? JSONDecoder().decode(PublicGames.self, from: data) {
+            applyFullSnapshot(serverTime: pub.serverTime, games: pub.games)
+            markFrameHealthy()
+        }
+    }
 
-        serverTime = pub.serverTime
+    func applyFullSnapshot(
+        serverTime newServerTime: Int,
+        games: [String: [LobbyInfo]]
+    ) {
+        serverTime = newServerTime
         var lobbies: [Lobby] = []
         // Iterate in a fixed category order so the rendered row order is
         // deterministic and stable tick to tick.
         for kind in CATEGORY_ORDER {
-            guard let arr = pub.games[kind] else { continue }
+            guard let arr = games[kind] else { continue }
             for (i, info) in arr.enumerated() {
                 lobbies.append(Lobby(
                     kind: kind,
@@ -571,15 +715,76 @@ final class AppDelegate: NSObject,
             }
         }
         currentLobbies = lobbies
+    }
+
+    func applyLobbyMessage(_ message: PublicLobbyMessage) {
+        serverTime = message.serverTime
+        switch message.type {
+        case "full":
+            guard let games = message.games else {
+                recordDecodeFailure("full lobby frame omitted games")
+                return
+            }
+            applyFullSnapshot(serverTime: message.serverTime, games: games)
+            if !hasLoggedFeedReady {
+                NSLog("[ofmw] lobby feed ready (\(currentLobbies.count) lobbies)")
+                hasLoggedFeedReady = true
+            }
+        case "counts":
+            guard let counts = message.counts else {
+                recordDecodeFailure("counts lobby frame omitted counts")
+                return
+            }
+            for index in currentLobbies.indices {
+                if let count = counts[currentLobbies[index].gameID] {
+                    currentLobbies[index].numClients = count
+                }
+            }
+        default:
+            recordDecodeFailure("unknown lobby frame type \(message.type)")
+            return
+        }
+
+        markFrameHealthy()
+    }
+
+    func markFrameHealthy() {
         connected = true
+        protocolError = nil
+        consecutiveDecodeFailures = 0
         lastMessageAt = Date()
-        // Healthy frames → backoff is no longer warranted.
         reconnectAttempt = 0
         pendingReconnect = false
-
         reconcileAlerts()
-        // In-place mutation only — never re-adds/removes items, so the
-        // menu stays interactive while it's open.
+        updateMenuFromState()
+    }
+
+    func handleBinaryMessage(_ data: Data) {
+        // Receiving a frame proves the socket is healthy even if OpenFront has
+        // deployed a schema newer than the bundled decoder. Do not turn a
+        // protocol mismatch into the old reconnect storm.
+        lastMessageAt = Date()
+        do {
+            guard let decoder = lobbyDecoder else {
+                throw LobbyDecoderError.missingFunction
+            }
+            let json = try decoder.decode(data)
+            let message = try JSONDecoder().decode(
+                PublicLobbyMessage.self, from: json
+            )
+            applyLobbyMessage(message)
+        } catch {
+            recordDecodeFailure(error.localizedDescription)
+        }
+    }
+
+    func recordDecodeFailure(_ message: String) {
+        consecutiveDecodeFailures += 1
+        connected = true
+        protocolError = "OpenFront protocol update required"
+        if consecutiveDecodeFailures == 1 || consecutiveDecodeFailures % 120 == 0 {
+            NSLog("[ofmw] lobby decode failed: \(message)")
+        }
         updateMenuFromState()
     }
 
@@ -750,7 +955,9 @@ final class AppDelegate: NSObject,
     func updateMenuFromState() {
         updateTitle()
 
-        if !activeAlerts.isEmpty {
+        if let protocolError {
+            statusHeaderItem.title = protocolError
+        } else if !activeAlerts.isEmpty {
             statusHeaderItem.title =
                 "ALERT: \(activeAlerts.count) watched map(s) live"
         } else if connected {
@@ -940,7 +1147,7 @@ final class AppDelegate: NSObject,
     }
 
     @objc func openOpenFront(_ sender: NSMenuItem) {
-        NSWorkspace.shared.open(OPENFRONT_URL)
+        openInSafari(OPENFRONT_URL)
     }
 
     @objc func quitApp(_ sender: NSMenuItem) {
