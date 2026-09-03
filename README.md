@@ -129,10 +129,10 @@ that pushes the public-lobby list every 500 ms. The site itself
 consumes that feed in its React client, which is why the front page
 shows the current FFA / Team / Special lobby.
 
-Since OpenFront commit `0cb90ccb`, those frames use OpenFront's positional
-`zbin` protocol rather than JSON. There is deliberately no wire-version byte
-or fallback. Map Watch therefore bundles OpenFront's own lobby decoder at the
-exact production commit instead of guessing enum ordinals. It handles both
+Since August 2026 those frames use OpenFront's positional `zbin` protocol
+rather than JSON. There is deliberately no wire-version byte or fallback, so
+Map Watch bundles OpenFront's own lobby decoder at the exact production
+commit instead of guessing enum ordinals. It handles both
 structural `full` snapshots and lightweight player-count updates. If a future
 deployment changes the schema, the menu reports **OpenFront protocol update
 required** and keeps the socket calm instead of entering a reconnect storm.

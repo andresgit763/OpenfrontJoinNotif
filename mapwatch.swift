@@ -323,6 +323,11 @@ final class AppDelegate: NSObject,
     var protocolError: String?
     var consecutiveDecodeFailures = 0
     var hasLoggedFeedReady = false
+    // True once a `full` snapshot has actually decoded. Lightweight
+    // `counts` frames keep decoding across schema changes, so without
+    // this the menu would report a healthy feed while the lobby list
+    // stayed permanently empty.
+    var hasAppliedFullSnapshot = false
 
     var activeAlerts: [String: String] = [:]   // gameID -> map (for flash title)
     var prevAlertState: [String: Bool] = [:]   // gameID -> wasCurrent last tick
@@ -726,6 +731,7 @@ final class AppDelegate: NSObject,
                 return
             }
             applyFullSnapshot(serverTime: message.serverTime, games: games)
+            hasAppliedFullSnapshot = true
             if !hasLoggedFeedReady {
                 NSLog("[ofmw] lobby feed ready (\(currentLobbies.count) lobbies)")
                 hasLoggedFeedReady = true
@@ -745,13 +751,18 @@ final class AppDelegate: NSObject,
             return
         }
 
-        markFrameHealthy()
+        // A `counts` frame only proves the socket is alive. Until a `full`
+        // snapshot has decoded we have no lobby metadata, so it must not
+        // clear a protocol error raised by the snapshot we failed to read.
+        markFrameHealthy(clearsProtocolError: hasAppliedFullSnapshot)
     }
 
-    func markFrameHealthy() {
+    func markFrameHealthy(clearsProtocolError: Bool = true) {
         connected = true
-        protocolError = nil
-        consecutiveDecodeFailures = 0
+        if clearsProtocolError {
+            protocolError = nil
+            consecutiveDecodeFailures = 0
+        }
         lastMessageAt = Date()
         reconnectAttempt = 0
         pendingReconnect = false

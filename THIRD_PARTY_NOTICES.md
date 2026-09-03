@@ -5,7 +5,7 @@ runtime dependencies. It is pinned to the commit deployed at openfront.io when
 this repair was made:
 
 - Repository: <https://github.com/openfrontio/OpenFrontIO>
-- Commit: `0cb90ccb74787e8384f030517423826fe9f607a9`
+- Commit: `8b45be57542f5f8cce8380c4a75d816674a1dabe`
 - OpenFrontIO license: GNU Affero General Public License v3.0
 - Zod license: MIT
 
