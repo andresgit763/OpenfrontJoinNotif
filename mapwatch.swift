@@ -16,7 +16,21 @@ import UserNotifications
 // MARK: - Constants
 
 let OPENFRONT_URL = URL(string: "https://openfront.io/")!
-let WORKER_COUNT = 20
+let OPENFRONT_SITE = "openfront.io"
+// Server-list v2: the API says which game servers exist, how many lobby
+// workers each runs, which build they serve and whether they take new
+// games. OpenFront runs several at once during a deploy (one "open", the
+// previous one "draining"), and since September 2026 the apex host no
+// longer proxies the lobby socket at all — it must be opened against the
+// chosen server's own host.
+let CLUSTER_URL = URL(
+    string: "https://api.openfront.io/cluster.json?site=\(OPENFRONT_SITE)"
+)!
+// Only used if the cluster endpoint can't be reached at all.
+let FALLBACK_HOST = "openfront.io"
+let FALLBACK_WORKER_COUNT = 20
+// How long a fetched server list is trusted before it is refetched.
+let CLUSTER_TTL: TimeInterval = 300
 let SAFARI_BUNDLE_ID = "com.apple.Safari"
 
 // Open `url` in Safari specifically, not the user's default browser.
@@ -155,6 +169,36 @@ struct PublicLobbyMessage: Decodable {
     let serverTime: Int
     let games: [String: [LobbyInfo]]?
     let counts: [String: Int]?
+    // Added by OpenFront in September 2026: the build the server is
+    // running. Its arrival shifted every field after it, which is what
+    // broke the previously pinned decoder — positional frames have no
+    // version marker, so an added field is a breaking change.
+    let gitCommit: String?
+}
+
+// GET /cluster.json?site= — the deployed server list.
+struct ClusterServer: Decodable {
+    let host: String
+    let numWorkers: Int
+    let version: String?
+    let state: String?
+}
+struct ClusterInfo: Decodable {
+    let latest: String?
+    let servers: [String: ClusterServer]
+
+    /// The server to watch: one that is taking new games ("open"). A
+    /// draining server still answers, but its lobby list empties out as
+    /// the deploy completes, so watching it would show an empty menu.
+    /// Ties are broken towards the build the API calls `latest`.
+    var preferred: ClusterServer? {
+        let open = servers.values.filter { $0.state == "open" }
+        let pool = open.isEmpty ? Array(servers.values) : open
+        if let latest, let match = pool.first(where: { $0.version == latest }) {
+            return match
+        }
+        return pool.sorted { $0.host < $1.host }.first
+    }
 }
 
 // Normalized lobby used internally.
@@ -328,6 +372,15 @@ final class AppDelegate: NSObject,
     // this the menu would report a healthy feed while the lobby list
     // stayed permanently empty.
     var hasAppliedFullSnapshot = false
+
+    /// Cached server list plus when it was fetched. Re-resolved when it
+    /// ages out, when a connection fails, and on wake — a deploy moves the
+    /// lobby feed to a different host with no warning.
+    var cluster: ClusterInfo?
+    var clusterFetchedAt: Date = .distantPast
+    var clusterFetchInFlight = false
+    /// Build the connected server reports in its `full` frame, for the menu.
+    var serverCommit: String?
 
     var activeAlerts: [String: String] = [:]   // gameID -> map (for flash title)
     var prevAlertState: [String: Bool] = [:]   // gameID -> wasCurrent last tick
@@ -523,9 +576,12 @@ final class AppDelegate: NSObject,
     }
 
     @objc func systemDidWake(_ note: Notification) {
-        // Reset backoff and reconnect immediately on wake.
+        // Reset backoff and reconnect immediately on wake. The machine may
+        // have been asleep across a deploy, so re-resolve the server list
+        // rather than trusting the host we used before sleeping.
         reconnectAttempt = 0
         pendingReconnect = false
+        clusterFetchedAt = .distantPast
         connectWebSocket()
     }
 
@@ -585,15 +641,66 @@ final class AppDelegate: NSObject,
 
     // MARK: WebSocket
 
+    /// Fetches the server list, then runs `then` on the main queue whether
+    /// it succeeded or not — a stale or missing list must never stop us
+    /// from attempting a connection.
+    func refreshCluster(force: Bool = false, then: @escaping () -> Void) {
+        let fresh = Date().timeIntervalSince(clusterFetchedAt) < CLUSTER_TTL
+        if !force, fresh, cluster != nil { then(); return }
+        if clusterFetchInFlight { then(); return }
+        clusterFetchInFlight = true
+
+        var req = URLRequest(url: CLUSTER_URL)
+        req.setValue(SAFARI_UA, forHTTPHeaderField: "User-Agent")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 10
+        session.dataTask(with: req) { [weak self] data, _, error in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.clusterFetchInFlight = false
+                if let data,
+                   let info = try? JSONDecoder().decode(ClusterInfo.self, from: data),
+                   !info.servers.isEmpty {
+                    let changed = info.preferred?.host != self.cluster?.preferred?.host
+                    self.cluster = info
+                    self.clusterFetchedAt = Date()
+                    if changed, let p = info.preferred {
+                        NSLog(
+                            "[ofmw] server list: using \(p.host) "
+                            + "(\(p.numWorkers) workers, state \(p.state ?? "?"))"
+                        )
+                    }
+                } else if self.cluster == nil {
+                    NSLog(
+                        "[ofmw] server list unavailable "
+                        + "(\(error?.localizedDescription ?? "bad response")) — "
+                        + "falling back to \(FALLBACK_HOST)"
+                    )
+                }
+                then()
+            }
+        }.resume()
+    }
+
     func connectWebSocket() {
         guard lobbyDecoder != nil else {
             connected = false
             updateMenuFromState()
             return
         }
-        let worker = Int.random(in: 0..<WORKER_COUNT)
-        NSLog("[ofmw] connecting to worker w\(worker)")
-        guard let url = URL(string: "wss://openfront.io/w\(worker)/lobbies")
+        // Re-resolve whenever the cached list has aged out. A forced
+        // refresh happens after repeated failures (see scheduleReconnect),
+        // which is what carries us across a deploy that moves the feed.
+        refreshCluster { [weak self] in self?.openLobbySocket() }
+    }
+
+    private func openLobbySocket() {
+        let server = cluster?.preferred
+        let host = server?.host ?? FALLBACK_HOST
+        let workers = max(server?.numWorkers ?? FALLBACK_WORKER_COUNT, 1)
+        let worker = Int.random(in: 0..<workers)
+        NSLog("[ofmw] connecting to \(host) w\(worker)")
+        guard let url = URL(string: "wss://\(host)/w\(worker)/lobbies")
         else { return }
         var req = URLRequest(url: url)
         req.setValue(SAFARI_UA, forHTTPHeaderField: "User-Agent")
@@ -648,6 +755,11 @@ final class AppDelegate: NSObject,
         if pendingReconnect { return }
         pendingReconnect = true
         reconnectAttempt += 1
+        // Two failures in a row against the same host is what a deploy
+        // looks like from here: the server we were watching stopped
+        // serving the feed. Drop the cached list so the next attempt
+        // re-resolves instead of retrying a host that has gone away.
+        if reconnectAttempt >= 2 { clusterFetchedAt = .distantPast }
         // Exponential backoff, 1s/2s/4s/8s/16s, capped at 30s.
         let delay = min(pow(2.0, Double(reconnectAttempt - 1)), 30.0)
         NSLog("[ofmw] reconnect scheduled in \(delay)s (attempt \(reconnectAttempt))")
@@ -732,6 +844,10 @@ final class AppDelegate: NSObject,
             }
             applyFullSnapshot(serverTime: message.serverTime, games: games)
             hasAppliedFullSnapshot = true
+            if let commit = message.gitCommit, commit != serverCommit {
+                serverCommit = commit
+                NSLog("[ofmw] server build \(commit.prefix(8))")
+            }
             if !hasLoggedFeedReady {
                 NSLog("[ofmw] lobby feed ready (\(currentLobbies.count) lobbies)")
                 hasLoggedFeedReady = true

@@ -124,10 +124,18 @@ node scripts/build-lobby-decoder.mjs /path/to/OpenFrontIO <git-commit>
 
 ## How it works (the 90-second version)
 
-openfront.io has a WebSocket at `wss://openfront.io/w{0-19}/lobbies`
-that pushes the public-lobby list every 500 ms. The site itself
-consumes that feed in its React client, which is why the front page
-shows the current FFA / Team / Special lobby.
+openfront.io pushes the public-lobby list every 500 ms over a WebSocket
+at `wss://<server host>/w{0-N}/lobbies`. The site itself consumes that
+feed in its client, which is why the front page shows the current FFA /
+Team / Special lobby.
+
+Which host and how many workers is not fixed: OpenFront runs several game
+servers at once and rolls deploys between them, so Map Watch reads the
+server list from `api.openfront.io/cluster.json` and connects to whichever
+server is currently `open` (the apex host stopped proxying this socket in
+September 2026). The list is re-resolved when it ages out, after repeated
+connection failures, and on wake from sleep, so a deploy that moves the
+feed to another host reconnects on its own.
 
 Since August 2026 those frames use OpenFront's positional `zbin` protocol
 rather than JSON. There is deliberately no wire-version byte or fallback, so
