@@ -1,6 +1,6 @@
 # OpenFront Map Watch
 
-A tiny native macOS menu bar app that alerts you when your favourite
+A light native macOS menu bar app that alerts you when your favourite
 map appears in the [openfront.io](https://openfront.io) public lobby
 rotation — so you can jump in before the lobby fills up.
 
