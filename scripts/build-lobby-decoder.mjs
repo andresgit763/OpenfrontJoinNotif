@@ -37,7 +37,26 @@ if (actualCommit !== expectedCommit) {
   );
 }
 
-await access(path.join(source, "src/core/ZbinWire.ts"));
+// OpenFront split its engine into npm workspace packages in October 2026
+// (packages/shared, packages/engine-api, packages/zbin, ...). The decoder
+// lives in @openfront/shared; the packages import each other by name, which
+// npm normally resolves through workspace symlinks in node_modules. Resolve
+// them straight from the checkout instead so the build does not depend on
+// those links existing.
+const wirePath = path.join(source, "packages/shared/src/ZbinWire.ts");
+await access(wirePath);
+const packagesDir = path.join(source, "packages");
+const openfrontPackages = {
+  name: "openfront-workspace-packages",
+  setup(build) {
+    build.onResolve({ filter: /^@openfront\/([^/]+)(\/.*)?$/ }, (args) => {
+      const match = /^@openfront\/([^/]+)(?:\/(.*))?$/.exec(args.path);
+      const [, pkg, subpath] = match;
+      const file = subpath ? `${subpath}.ts` : "index.ts";
+      return { path: path.join(packagesDir, pkg, "src", file) };
+    });
+  },
+};
 const requireFromOpenFront = createRequire(
   path.join(source, "package.json"),
 );
@@ -67,7 +86,7 @@ globalThis.TextDecoder ??= class TextDecoder {
 await esbuild.build({
   stdin: {
     contents: `
-      import { decodeLobbyMessage } from "./src/core/ZbinWire.ts";
+      import { decodeLobbyMessage } from "./packages/shared/src/ZbinWire.ts";
       globalThis.OPENFRONT_DECODER_COMMIT = ${JSON.stringify(expectedCommit)};
       globalThis.decodeLobbyFrame = function (bytes) {
         return JSON.stringify(decodeLobbyMessage(Uint8Array.from(bytes)));
@@ -77,7 +96,11 @@ await esbuild.build({
     sourcefile: "lobby-decoder-entry.ts",
     loader: "ts",
   },
-  alias: { resources: path.join(source, "resources") },
+  alias: {
+    resources: path.join(source, "resources"),
+    src: path.join(source, "src"),
+  },
+  plugins: [openfrontPackages],
   banner: { js: utf8Polyfill },
   bundle: true,
   format: "iife",

@@ -107,8 +107,11 @@ git pull
 ```
 
 Maintainers updating for a new OpenFront wire schema should check out the
-commit shown in the deployed site's `window.BOOTSTRAP_CONFIG.gitCommit`, run
-`npm run inst` in that OpenFrontIO checkout, then rebuild the pinned decoder:
+commit shown in the deployed site's `window.BOOTSTRAP_CONFIG.gitCommit` (also
+`latest` in `api.openfront.io/cluster.json?site=openfront.io`), run
+`npm run inst` in that OpenFrontIO checkout (upstream pins a Node major in
+`engines`; on another Node, `npm_config_engine_strict=false npm run inst`),
+then rebuild the pinned decoder:
 
 ```bash
 node scripts/build-lobby-decoder.mjs /path/to/OpenFrontIO <git-commit>

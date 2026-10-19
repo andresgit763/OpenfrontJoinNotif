@@ -62,38 +62,41 @@ let MODE_LABELS: [String: String] = [
 // existing rows around.
 let CATEGORY_ORDER = ["ffa", "team", "special"]
 
-// Mirrors src/core/game/Game.ts :: GameMapType in the OpenFrontIO repo.
-// Generated from OpenFrontIO's Maps.gen.ts at the decoder commit bundled with
-// this app. Keep canonical spelling: map names are wire values and therefore
+// Mirrors GameMapType in the OpenFrontIO repo
+// (packages/engine-api/src/game/Maps.gen.ts), in enum order, at the decoder
+// commit bundled with this app. Keep canonical spelling: map names are wire values and therefore
 // also the keys stored in the user's watchlist.
 let ALL_MAPS: [String] = [
     "Achiran", "Aegean", "Africa", "Alps", "Amazon River", "Antarctica",
-    "ArchipelagoSea", "Arctic", "Asia", "Australia", "Baikal",
-    "Baikal Nuke Wars", "Baja California", "Balkans", "Balkhash", "Baltics",
-    "Bering Sea", "Bering Strait", "Between Two Seas", "Black Sea",
-    "Bosphorus Straits", "Branching Paths", "Britannia", "Britannia Classic",
-    "Caribbean", "Caspian Sea", "Caucasus", "China", "Chopping Block",
+    "ArchipelagoSea", "Arctic", "Asia", "Australia", "Bab el-Mandeb Strait",
+    "Baikal", "Baikal Nuke Wars", "Baja California", "Balkans", "Balkhash",
+    "Baltics", "Benelux", "Bering Sea", "Bering Strait", "Between Two Seas",
+    "Black Sea", "Bosphorus Straits", "Brain Rot", "Branching Paths",
+    "Britannia", "Britannia Classic", "Canary Islands", "Cape Cod",
+    "Cape Of Good Hope", "Caribbean", "Caspian Sea", "Caucasus",
+    "Central America", "Channel Islands", "China", "Chopping Block",
     "Clearwater Lakes", "Conakry", "Crimea", "Danish Straits",
     "Deglaciated Antarctica", "Didier", "Didier France", "Dyslexdria",
     "East Asia", "Europe", "Europe Classic", "Falkland Islands",
     "Faroe Islands", "Finger Lakes", "Four Islands", "France",
     "Gateway to the Atlantic", "Germany", "Giant World Map", "Great Lakes",
-    "Gulf Of Guinea", "Gulf of St. Lawrence", "Halkidiki", "Hawaii",
-    "Hecate Strait", "Hong Kong", "Iceland", "Indian Subcontinent",
-    "Irish Sea", "Italia", "Japan", "Juan De Fuca Strait", "Korea",
-    "Labyrinth", "Las Vegas Strip", "Lemnos", "Levant", "Lisbon",
-    "Los Angeles", "Luna", "Manicouagan", "Mare Nostrum", "Mars", "Mena",
-    "Middle East", "MilkyWay", "Mississippi River", "Montreal",
-    "More Than Luck", "New York City", "Nile Delta", "North America",
-    "Northwest Passage", "Oceania", "Onion", "Pangaea", "Passage", "Pluto",
-    "Russia", "San Francisco", "Scandinavia", "Sierpinski", "Sol",
-    "South America", "SoutheastAsia", "Strait of Gibraltar",
-    "Strait of Hormuz", "Strait Of Malacca", "Surrounded", "Svalmel",
-    "Taiwan Strait", "The Box", "Tierra Del Fuego", "Titan",
-    "Tourney 2 Teams", "Tourney 3 Teams", "Tourney 4 Teams",
+    "Gulf Of Guinea", "Gulf Of Mexico", "Gulf of St. Lawrence", "Halkidiki",
+    "Hawaii", "Hecate Strait", "Hong Kong", "Horn Of Africa", "Iceland",
+    "Indian Subcontinent", "Irish Sea", "Italia", "Japan",
+    "Juan De Fuca Strait", "Korea", "Labyrinth", "Las Vegas Strip", "Lemnos",
+    "Levant", "Lisbon", "Los Angeles", "Luna", "Madagascar", "Manicouagan",
+    "Mare Nostrum", "Mars", "Mena", "Middle East", "MilkyWay",
+    "Mississippi River", "Montreal", "More Than Luck", "New York City",
+    "New Zealand", "Nile Delta", "North America", "Northwest Passage",
+    "Oceania", "Ommatrypta", "Onion", "Pangaea", "Passage", "Pluto",
+    "Pulicat Lake", "Qing China", "Rio de Janeiro", "Russia", "San Francisco",
+    "Scandinavia", "Sierpinski", "Sol", "South America", "SoutheastAsia",
+    "Strait of Gibraltar", "Strait of Hormuz", "Strait Of Malacca",
+    "Surrounded", "Svalmel", "Taiwan Strait", "The Box", "Tierra Del Fuego",
+    "Titan", "Tourney 2 Teams", "Tourney 3 Teams", "Tourney 4 Teams",
     "Tourney 8 Teams", "Traders Dream", "Two Lakes", "United States",
-    "Venice", "Vietnam", "Warship Warship", "World", "World Inverted",
-    "Yellow Sea", "Yenisei",
+    "Vancouver Island", "Venice", "Vietnam", "Warship Warship", "World",
+    "World Inverted", "Yangtze River", "Yellow Sea", "Yenisei",
 ]
 
 let POPULAR_MAPS: [String] = [
