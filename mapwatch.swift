@@ -94,9 +94,10 @@ let ALL_MAPS: [String] = [
     "Strait of Gibraltar", "Strait of Hormuz", "Strait Of Malacca",
     "Surrounded", "Svalmel", "Taiwan Strait", "The Box", "Tierra Del Fuego",
     "Titan", "Tourney 2 Teams", "Tourney 3 Teams", "Tourney 4 Teams",
-    "Tourney 8 Teams", "Traders Dream", "Two Lakes", "United States",
-    "Vancouver Island", "Venice", "Vietnam", "Warship Warship", "World",
-    "World Inverted", "Yangtze River", "Yellow Sea", "Yenisei",
+    "Tourney 8 Teams", "Traders Dream", "Tutorial", "Two Lakes",
+    "United States", "Vancouver Island", "Venice", "Vietnam",
+    "Warship Warship", "World", "World Inverted", "Yangtze River",
+    "Yellow Sea", "Yenisei",
 ]
 
 let POPULAR_MAPS: [String] = [
