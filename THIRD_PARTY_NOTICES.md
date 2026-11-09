@@ -5,7 +5,7 @@
 pinned to the commit deployed at openfront.io when this repair was made:
 
 - Repository: <https://github.com/openfrontio/OpenFrontIO>
-- Commit: `c144d134d1503191b4c3fd9a866fc583b9ecea4a`
+- Commit: `0211f17b71efa762242b620b91ffa5d8439522e6`
 - OpenFrontIO license: GNU Affero General Public License v3.0
 - Zod license: MIT
 
