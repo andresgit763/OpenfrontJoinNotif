@@ -3,7 +3,8 @@
 # OpenFront's lobby feed is positional zbin with no version byte, so each
 # deploy can change the wire layout. Production deploys are recorded in the
 # public GitHub deployments API of openfrontio/OpenFrontIO (environments
-# prod-blue / prod-green, with the exact commit), so this job polls that,
+# prod-blue / prod-green, with the exact commit), so this job polls that
+# every 3 hours (off the hour, when GitHub delays fewer scheduled runs),
 # builds decoders/<commit>.js for any build it has not seen, and commits it.
 # The app downloads the file matching the server it connects to, so a deploy
 # no longer needs a manual re-pin and reinstall.
@@ -11,7 +12,7 @@ name: Lobby decoders
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "17 */3 * * *"
   workflow_dispatch:
 
 permissions:

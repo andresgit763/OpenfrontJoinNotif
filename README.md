@@ -110,7 +110,8 @@ OpenFront deploys don't need an update: the app fetches the decoder for the
 new build by itself (see *How it works*). `git pull` is only for app changes.
 
 The decoders are built by the **Lobby decoders** GitHub Action, which runs
-every 15 minutes. To build one by hand, check out the deployed OpenFrontIO
+every 3 hours. To publish one sooner, run the Action from the repo's
+*Actions* tab (*Run workflow*). To build one by hand, check out the deployed OpenFrontIO
 commit, run `npm_config_engine_strict=false npm ci --ignore-scripts` in it,
 then:
 
@@ -153,14 +154,14 @@ Keeping up with deploys is automatic:
 
 1. OpenFront records every production deploy, with its commit, in the public
    GitHub deployments API of `openfrontio/OpenFrontIO`.
-2. The **Lobby decoders** Action in this repo checks that every 15 minutes
+2. The **Lobby decoders** Action in this repo checks that every 3 hours
    and publishes `decoders/<commit>.js` for each new build.
 3. The app reads the server's build from the server list and downloads the
    matching decoder. It caches the last few under
    `~/Library/Application Support/openfrontmod/decoders/`.
 
 The decoder bundled in the app is only the starting point. Between a deploy
-and the Action publishing its decoder (usually under half an hour), the old
+and the Action publishing its decoder (up to about 3 hours), the old
 decoder keeps running. If it can't read the new frames, the menu says
 **OpenFront updated, fetching new decoder** and the socket stays calm instead
 of entering a reconnect storm. Downloaded decoders run in a bare
