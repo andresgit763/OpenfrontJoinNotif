@@ -85,15 +85,15 @@ Your watchlist and sound preference are saved to:
 
 ## Start / Stop / Restart
 
-Running is the default — LaunchAgent starts the app at every login.
+Running is the default — LaunchAgent starts the app at every login and
+restarts it if it ever exits. **`OF` → Quit** stops it until the next login.
 
 | I want to… | Command |
 |---|---|
-| Start now (from menu bar's **Quit**) | `launchctl kickstart gui/$UID/com.openfrontmod.mapwatch` |
-| Force restart (e.g. after an update) | `launchctl kickstart -k gui/$UID/com.openfrontmod.mapwatch` |
-| Stop the current session | Click **`OF` → Quit** in the menu bar |
-| Disable autostart at login | `launchctl bootout gui/$UID/com.openfrontmod.mapwatch` |
-| Re-enable autostart | `launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.openfrontmod.mapwatch.plist` |
+| Start again after **Quit** | `launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.openfrontmod.mapwatch.plist` |
+| Force restart | `launchctl kickstart -k gui/$UID/com.openfrontmod.mapwatch` |
+| Stop until next login | Click **`OF` → Quit** in the menu bar |
+| Remove autostart for good | `./uninstall.sh` |
 
 Double-clicking the `.app` in `~/Applications/` (or Spotlight-searching
 *OpenFront*) also starts it if it's not running.
@@ -106,17 +106,19 @@ git pull
 ./install.sh     # recompiles + reloads
 ```
 
-Maintainers updating for a new OpenFront wire schema should check out the
-commit shown in the deployed site's `window.BOOTSTRAP_CONFIG.gitCommit` (also
-`latest` in `api.openfront.io/cluster.json?site=openfront.io`), run
-`npm run inst` in that OpenFrontIO checkout (upstream pins a Node major in
-`engines`; on another Node, `npm_config_engine_strict=false npm run inst`),
-then rebuild the pinned decoder:
+OpenFront deploys don't need an update: the app fetches the decoder for the
+new build by itself (see *How it works*). `git pull` is only for app changes.
+
+The decoders are built by the **Lobby decoders** GitHub Action, which runs
+every 15 minutes. To build one by hand, check out the deployed OpenFrontIO
+commit, run `npm_config_engine_strict=false npm ci --ignore-scripts` in it,
+then:
 
 ```bash
-node scripts/build-lobby-decoder.mjs /path/to/OpenFrontIO <git-commit>
-./install.sh
+node scripts/build-lobby-decoder.mjs /path/to/OpenFrontIO <git-commit> decoders/<git-commit>.js
 ```
+
+Leave out the last argument to rebuild the decoder bundled in the app instead.
 
 ## Uninstall
 
@@ -141,12 +143,28 @@ connection failures, and on wake from sleep, so a deploy that moves the
 feed to another host reconnects on its own.
 
 Since August 2026 those frames use OpenFront's positional `zbin` protocol
-rather than JSON. There is deliberately no wire-version byte or fallback, so
-Map Watch bundles OpenFront's own lobby decoder at the exact production
-commit instead of guessing enum ordinals. It handles both
-structural `full` snapshots and lightweight player-count updates. If a future
-deployment changes the schema, the menu reports **OpenFront protocol update
-required** and keeps the socket calm instead of entering a reconnect storm.
+rather than JSON. There is deliberately no wire-version byte or fallback:
+fields are read in declaration order and enums by position, so any OpenFront
+release can change the layout (a new map shifts every map after it in the
+alphabet). Map Watch therefore runs OpenFront's own lobby decoder built from
+the exact commit the server runs, never a guess.
+
+Keeping up with deploys is automatic:
+
+1. OpenFront records every production deploy, with its commit, in the public
+   GitHub deployments API of `openfrontio/OpenFrontIO`.
+2. The **Lobby decoders** Action in this repo checks that every 15 minutes
+   and publishes `decoders/<commit>.js` for each new build.
+3. The app reads the server's build from the server list and downloads the
+   matching decoder. It caches the last few under
+   `~/Library/Application Support/openfrontmod/decoders/`.
+
+The decoder bundled in the app is only the starting point. Between a deploy
+and the Action publishing its decoder (usually under half an hour), the old
+decoder keeps running. If it can't read the new frames, the menu says
+**OpenFront updated, fetching new decoder** and the socket stays calm instead
+of entering a reconnect storm. Downloaded decoders run in a bare
+JavaScriptCore context with no access to the system.
 
 Cloudflare protects that WebSocket — it rejects most generic HTTP
 clients. But its gate is **TLS client fingerprint (JA3/JA4)**, not a

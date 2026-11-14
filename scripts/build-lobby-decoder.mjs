@@ -3,7 +3,11 @@
 // Rebuild lobby-decoder.js from an exact OpenFrontIO checkout.
 //
 // Usage:
-//   node scripts/build-lobby-decoder.mjs /path/to/OpenFrontIO <git-commit>
+//   node scripts/build-lobby-decoder.mjs /path/to/OpenFrontIO <git-commit> [output.js]
+//
+// Without an output path it rewrites the bundled lobby-decoder.js. CI passes
+// decoders/<git-commit>.js instead, which the app downloads when the server it
+// connects to runs a build newer than the bundled decoder.
 //
 // OpenFront's zbin wire format has no version marker. The checkout must be at
 // the commit deployed by openfront.io (window.BOOTSTRAP_CONFIG.gitCommit), not
@@ -16,17 +20,23 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const [, , sourceArgument, expectedCommit] = process.argv;
+const [, , sourceArgument, expectedCommit, outputArgument] = process.argv;
 if (!sourceArgument || !expectedCommit) {
   console.error(
-    "Usage: node scripts/build-lobby-decoder.mjs /path/to/OpenFrontIO <git-commit>",
+    "Usage: node scripts/build-lobby-decoder.mjs /path/to/OpenFrontIO <git-commit> [output.js]",
   );
+  process.exit(2);
+}
+if (!/^[0-9a-f]{40}$/.test(expectedCommit)) {
+  console.error("<git-commit> must be a full 40-character commit hash");
   process.exit(2);
 }
 
 const source = path.resolve(sourceArgument);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const output = path.resolve(scriptDir, "..", "lobby-decoder.js");
+const output = outputArgument
+  ? path.resolve(outputArgument)
+  : path.resolve(scriptDir, "..", "lobby-decoder.js");
 const actualCommit = execFileSync("git", ["-C", source, "rev-parse", "HEAD"], {
   encoding: "utf8",
 }).trim();

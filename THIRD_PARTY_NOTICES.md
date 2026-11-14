@@ -12,3 +12,6 @@ pinned to the commit deployed at openfront.io when this repair was made:
 The commit is read from the deployed site's `window.BOOTSTRAP_CONFIG.gitCommit`,
 because OpenFront's zbin protocol intentionally has no version marker and must
 be decoded with the matching schema.
+
+Each `decoders/<commit>.js` is the same bundle built from the OpenFrontIO
+commit in its file name, under the same licenses.

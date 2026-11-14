@@ -29,8 +29,21 @@ let CLUSTER_URL = URL(
 // Only used if the cluster endpoint can't be reached at all.
 let FALLBACK_HOST = "openfront.io"
 let FALLBACK_WORKER_COUNT = 20
-// How long a fetched server list is trusted before it is refetched.
+// How long a fetched server list is trusted before it is refetched. Also how
+// often a connected app re-reads it to notice a deploy.
 let CLUSTER_TTL: TimeInterval = 300
+// Decoders for OpenFront builds newer than the one bundled in the app. This
+// repo's CI (.github/workflows/decoders.yml) publishes decoders/<commit>.js
+// for every production deploy; the app fetches the file matching the build
+// of the server it connects to, so a deploy needs no reinstall.
+let DECODER_BASE_URL = URL(
+    string: "https://raw.githubusercontent.com/andresgit763/OpenfrontJoinNotif/main/decoders/"
+)!
+// How long to wait before asking again for a decoder CI has not published yet.
+let DECODER_RETRY_INTERVAL: TimeInterval = 300
+// Downloaded decoders kept on disk.
+let DECODER_CACHE_LIMIT = 5
+let LAUNCH_AGENT_LABEL = "com.openfrontmod.mapwatch"
 let SAFARI_BUNDLE_ID = "com.apple.Safari"
 
 // Open `url` in Safari specifically, not the user's default browser.
@@ -129,6 +142,14 @@ func configDir() -> URL {
 
 func configPath() -> URL { configDir().appendingPathComponent("config.json") }
 
+func decoderCacheDir() -> URL { configDir().appendingPathComponent("decoders") }
+
+/// Full lowercase git commit hash. Commits name decoder files and URLs, so
+/// anything else is rejected before it reaches a path.
+func isCommitHash(_ s: String) -> Bool {
+    s.count == 40 && s.allSatisfy { "0123456789abcdef".contains($0) }
+}
+
 func loadConfig() -> Config {
     let url = configPath()
     guard let data = try? Data(contentsOf: url),
@@ -222,6 +243,8 @@ enum LobbyDecoderError: LocalizedError {
     case missingFunction
     case javascript(String)
     case invalidResult
+    case notPublished(String)
+    case commitMismatch(String)
 
     var errorDescription: String? {
         switch self {
@@ -233,6 +256,10 @@ enum LobbyDecoderError: LocalizedError {
             return "OpenFront decoder error: \(message)"
         case .invalidResult:
             return "the OpenFront decoder returned no JSON"
+        case .notPublished(let detail):
+            return "not published yet (\(detail))"
+        case .commitMismatch(let commit):
+            return "downloaded decoder is for \(commit.prefix(8))"
         }
     }
 }
@@ -245,12 +272,19 @@ final class LobbyFrameDecoder {
     private var exceptionMessage: String?
     private(set) var openFrontCommit = "unknown"
 
-    init() throws {
+    /// The decoder shipped inside the app bundle.
+    static func bundled() throws -> LobbyFrameDecoder {
         guard let scriptURL = Bundle.main.url(
             forResource: "lobby-decoder", withExtension: "js"
         ) else { throw LobbyDecoderError.missingResource }
+        return try LobbyFrameDecoder(
+            script: try String(contentsOf: scriptURL, encoding: .utf8)
+        )
+    }
 
-        let script = try String(contentsOf: scriptURL, encoding: .utf8)
+    /// Evaluates a decoder bundle in its own JavaScriptCore context. The
+    /// context gets no native bridges: the script can only compute.
+    init(script: String) throws {
         guard let context = JSContext() else {
             throw LobbyDecoderError.missingFunction
         }
@@ -386,6 +420,13 @@ final class AppDelegate: NSObject,
     var clusterFetchInFlight = false
     /// Build the connected server reports in its `full` frame, for the menu.
     var serverCommit: String?
+    /// Host the current socket was opened against, and the build the server
+    /// list said it runs. The decoder has to match that build.
+    var connectedHost: String?
+    var connectedVersion: String?
+    var decoderFetchInFlight: String?
+    var decoderRetryAfter: [String: Date] = [:]
+    var clusterPollTimer: Timer?
 
     var activeAlerts: [String: String] = [:]   // gameID -> map (for flash title)
     var prevAlertState: [String: Bool] = [:]   // gameID -> wasCurrent last tick
@@ -436,7 +477,7 @@ final class AppDelegate: NSObject,
         )
 
         do {
-            lobbyDecoder = try LobbyFrameDecoder()
+            lobbyDecoder = try LobbyFrameDecoder.bundled()
             NSLog(
                 "[ofmw] loaded OpenFront lobby decoder at commit \(lobbyDecoder!.openFrontCommit)"
             )
@@ -451,6 +492,7 @@ final class AppDelegate: NSObject,
         updateMenuFromState()
         startFlashTimer()
         startWatchdog()
+        startClusterPoll()
         startPingTimer()
         registerSleepWakeHandlers()
         setupNotifications()
@@ -617,6 +659,131 @@ final class AppDelegate: NSObject,
         }
     }
 
+    func startClusterPoll() {
+        clusterPollTimer = Timer.scheduledTimer(
+            withTimeInterval: CLUSTER_TTL, repeats: true
+        ) { [weak self] _ in self?.syncWithCluster() }
+    }
+
+    /// Re-reads the server list and lines the socket and decoder up with it:
+    /// leaves a server that stopped taking games, and fetches the decoder for
+    /// the build the connected server runs. This is what carries the app
+    /// across an OpenFront deploy without a reinstall.
+    func syncWithCluster() {
+        refreshCluster(force: true) { [weak self] in
+            guard let self, let cluster = self.cluster else { return }
+            if let preferred = cluster.preferred,
+               let host = self.connectedHost, preferred.host != host,
+               !self.pendingReconnect {
+                NSLog("[ofmw] \(host) is no longer the open server; moving to \(preferred.host)")
+                self.reconnectAttempt = 0
+                self.connectWebSocket()
+                return
+            }
+            if let version = cluster.servers.values
+                .first(where: { $0.host == self.connectedHost })?.version {
+                self.connectedVersion = version
+            }
+            self.ensureDecoder(for: self.connectedVersion)
+        }
+    }
+
+    // MARK: Decoder updates
+
+    /// Makes `commit`'s decoder the active one: from the on-disk cache if it
+    /// was downloaded before, otherwise from this repo's published decoders.
+    /// The current decoder keeps running meanwhile; most deploys leave the
+    /// lobby layout alone, so it usually still works.
+    func ensureDecoder(for commit: String?) {
+        guard let commit, isCommitHash(commit),
+              lobbyDecoder?.openFrontCommit != commit
+        else { return }
+
+        let cached = decoderCacheDir().appendingPathComponent("\(commit).js")
+        if let script = try? String(contentsOf: cached, encoding: .utf8),
+           let decoder = try? LobbyFrameDecoder(script: script),
+           decoder.openFrontCommit == commit {
+            installDecoder(decoder, from: "cache")
+            return
+        }
+        if decoderFetchInFlight == commit { return }
+        if let retry = decoderRetryAfter[commit], retry > Date() { return }
+        decoderFetchInFlight = commit
+
+        var req = URLRequest(
+            url: DECODER_BASE_URL.appendingPathComponent("\(commit).js")
+        )
+        req.timeoutInterval = 30
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        // URLSession.shared, not `session`: that one sends OpenFront's Origin.
+        URLSession.shared.dataTask(with: req) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.decoderFetchInFlight = nil
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                do {
+                    guard status == 200, let data,
+                          let script = String(data: data, encoding: .utf8)
+                    else {
+                        throw LobbyDecoderError.notPublished(
+                            status == 0
+                                ? (error?.localizedDescription ?? "no response")
+                                : "HTTP \(status)"
+                        )
+                    }
+                    let decoder = try LobbyFrameDecoder(script: script)
+                    guard decoder.openFrontCommit == commit else {
+                        throw LobbyDecoderError.commitMismatch(decoder.openFrontCommit)
+                    }
+                    try FileManager.default.createDirectory(
+                        at: decoderCacheDir(), withIntermediateDirectories: true
+                    )
+                    try data.write(to: cached, options: .atomic)
+                    self.pruneDecoderCache()
+                    self.installDecoder(decoder, from: "download")
+                } catch {
+                    self.decoderRetryAfter[commit] =
+                        Date().addingTimeInterval(DECODER_RETRY_INTERVAL)
+                    NSLog(
+                        "[ofmw] decoder for OpenFront \(commit.prefix(8)): "
+                        + "\(error.localizedDescription); retrying in "
+                        + "\(Int(DECODER_RETRY_INTERVAL / 60)) min"
+                    )
+                }
+            }
+        }.resume()
+    }
+
+    func installDecoder(_ decoder: LobbyFrameDecoder, from source: String) {
+        let previous = lobbyDecoder?.openFrontCommit ?? "none"
+        lobbyDecoder = decoder
+        consecutiveDecodeFailures = 0
+        NSLog(
+            "[ofmw] lobby decoder \(previous.prefix(8)) -> "
+            + "\(decoder.openFrontCommit.prefix(8)) (\(source))"
+        )
+        // Without a decoder the app never opened a socket; open one now.
+        if task == nil { connectWebSocket() }
+    }
+
+    func pruneDecoderCache() {
+        let fm = FileManager.default
+        let key = URLResourceKey.contentModificationDateKey
+        guard let files = try? fm.contentsOfDirectory(
+            at: decoderCacheDir(), includingPropertiesForKeys: [key]
+        ) else { return }
+        func modified(_ url: URL) -> Date {
+            (try? url.resourceValues(forKeys: [key]).contentModificationDate)
+                ?? .distantPast
+        }
+        let newestFirst = files
+            .filter { $0.pathExtension == "js" }
+            .sorted { modified($0) > modified($1) }
+        for url in newestFirst.dropFirst(DECODER_CACHE_LIMIT) {
+            try? fm.removeItem(at: url)
+        }
+    }
+
     // MARK: Status item / title
 
     func buildStatusItem() {
@@ -691,6 +858,11 @@ final class AppDelegate: NSObject,
         guard lobbyDecoder != nil else {
             connected = false
             updateMenuFromState()
+            // No usable decoder at all: learn the server's build and fetch
+            // its decoder; installDecoder() comes back here once it loads.
+            refreshCluster { [weak self] in
+                self?.ensureDecoder(for: self?.cluster?.preferred?.version)
+            }
             return
         }
         // Re-resolve whenever the cached list has aged out. A forced
@@ -704,6 +876,8 @@ final class AppDelegate: NSObject,
         let host = server?.host ?? FALLBACK_HOST
         let workers = max(server?.numWorkers ?? FALLBACK_WORKER_COUNT, 1)
         let worker = Int.random(in: 0..<workers)
+        connectedHost = host
+        connectedVersion = server?.version
         NSLog("[ofmw] connecting to \(host) w\(worker)")
         guard let url = URL(string: "wss://\(host)/w\(worker)/lobbies")
         else { return }
@@ -723,6 +897,8 @@ final class AppDelegate: NSObject,
         pendingReconnect = false
         t.resume()
         receiveMessage(on: t, connID: connID)
+        // After the task exists, so a decoder swap doesn't open a second socket.
+        ensureDecoder(for: connectedVersion)
     }
 
     /// Callbacks are bound to a specific (task, connID) pair. If by the
@@ -853,6 +1029,10 @@ final class AppDelegate: NSObject,
                 serverCommit = commit
                 NSLog("[ofmw] server build \(commit.prefix(8))")
             }
+            if let commit = message.gitCommit,
+               commit != lobbyDecoder?.openFrontCommit {
+                ensureDecoder(for: commit)
+            }
             if !hasLoggedFeedReady {
                 NSLog("[ofmw] lobby feed ready (\(currentLobbies.count) lobbies)")
                 hasLoggedFeedReady = true
@@ -913,9 +1093,12 @@ final class AppDelegate: NSObject,
     func recordDecodeFailure(_ message: String) {
         consecutiveDecodeFailures += 1
         connected = true
-        protocolError = "OpenFront protocol update required"
+        protocolError = "OpenFront updated, fetching new decoder"
         if consecutiveDecodeFailures == 1 || consecutiveDecodeFailures % 120 == 0 {
             NSLog("[ofmw] lobby decode failed: \(message)")
+            // Undecodable frames almost always mean a deploy: look up the
+            // server's new build and fetch its decoder.
+            syncWithCluster()
         }
         updateMenuFromState()
     }
@@ -1283,6 +1466,20 @@ final class AppDelegate: NSObject,
     }
 
     @objc func quitApp(_ sender: NSMenuItem) {
+        // The LaunchAgent keeps the app alive, so a plain exit would just be
+        // restarted. Unload the job for this login session instead: launchd
+        // stops the app, and RunAtLoad brings it back at the next login.
+        if ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == LAUNCH_AGENT_LABEL {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            proc.arguments = ["bootout", "gui/\(getuid())/\(LAUNCH_AGENT_LABEL)"]
+            if (try? proc.run()) != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                    NSApp.terminate(nil)
+                }
+                return
+            }
+        }
         NSApp.terminate(self)
     }
 }
