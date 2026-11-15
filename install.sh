@@ -39,10 +39,11 @@ PLIST_DEST="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 # 1. Build.
 bash "$HERE/build.sh"
 
-# 2. Install.
+# 2. Install. Move rather than copy, so the build doesn't leave a second
+# copy of the app in dist/ for Spotlight to list.
 mkdir -p "$INSTALL_DIR"
 rm -rf "$APP"
-cp -R "$HERE/dist/$APP_NAME.app" "$APP"
+mv "$HERE/dist/$APP_NAME.app" "$APP"
 
 # 3. LaunchAgent.
 APP_BIN="$APP/Contents/MacOS/OpenFrontMapWatch"

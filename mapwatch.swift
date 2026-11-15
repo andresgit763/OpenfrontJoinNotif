@@ -1486,6 +1486,49 @@ final class AppDelegate: NSObject,
 
 // MARK: - Entry point
 
+func runLaunchctl(_ arguments: [String]) -> Int32 {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+    proc.arguments = arguments
+    proc.standardOutput = FileHandle.nullDevice
+    proc.standardError = FileHandle.nullDevice
+    do { try proc.run() } catch { return -1 }
+    proc.waitUntilExit()
+    return proc.terminationStatus
+}
+
+/// Opening the app from Spotlight, Finder or Launchpad starts a copy that
+/// launchd doesn't manage: nothing restarts it if it exits, and its log goes
+/// nowhere. When the LaunchAgent is installed, start the job instead (this is
+/// also how to start again after Quit) and let this copy exit, so there is
+/// only ever the one managed watcher, whichever copy of the app was opened.
+func handOffToLaunchAgent() -> Bool {
+    if ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == LAUNCH_AGENT_LABEL {
+        return false
+    }
+    let plist = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/LaunchAgents/\(LAUNCH_AGENT_LABEL).plist")
+    guard let job = NSDictionary(contentsOf: plist),
+          let program = (job["ProgramArguments"] as? [String])?.first,
+          FileManager.default.isExecutableFile(atPath: program)
+    else { return false }
+    let domain = "gui/\(getuid())"
+    // bootstrap loads the job and RunAtLoad starts it. If the job is already
+    // loaded, kickstart starts it (without -k it leaves a running one alone).
+    // Right after Quit launchd may still be unloading it, so retry briefly.
+    for attempt in 0..<4 {
+        if attempt > 0 { Thread.sleep(forTimeInterval: 1) }
+        if runLaunchctl(["bootstrap", domain, plist.path]) == 0 { return true }
+        if runLaunchctl(["kickstart", "\(domain)/\(LAUNCH_AGENT_LABEL)"]) == 0 { return true }
+    }
+    return false
+}
+
+if handOffToLaunchAgent() {
+    NSLog("[ofmw] opened by hand; started the LaunchAgent copy instead")
+    exit(0)
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 let delegate = AppDelegate()

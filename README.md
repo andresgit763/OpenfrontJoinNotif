@@ -88,15 +88,18 @@ Your watchlist and sound preference are saved to:
 Running is the default — LaunchAgent starts the app at every login and
 restarts it if it ever exits. **`OF` → Quit** stops it until the next login.
 
-| I want to… | Command |
+| I want to… | Do this |
 |---|---|
-| Start again after **Quit** | `launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.openfrontmod.mapwatch.plist` |
+| Start again after **Quit** | Open **OpenFront Map Watch** from Spotlight or `~/Applications` |
 | Force restart | `launchctl kickstart -k gui/$UID/com.openfrontmod.mapwatch` |
 | Stop until next login | Click **`OF` → Quit** in the menu bar |
 | Remove autostart for good | `./uninstall.sh` |
 
-Double-clicking the `.app` in `~/Applications/` (or Spotlight-searching
-*OpenFront*) also starts it if it's not running.
+Opening the app by hand doesn't start a second, unmanaged copy: it starts
+the LaunchAgent (the copy that restarts itself and logs to
+`/tmp/openfrontmapwatch.err`) and exits. If it's already running, nothing
+changes. `./install.sh` moves the built app into `~/Applications`, so
+Spotlight lists only the one installed copy.
 
 ## Update
 

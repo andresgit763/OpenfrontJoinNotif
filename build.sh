@@ -15,9 +15,14 @@ APP="$DIST/$APP_NAME.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-# Compile.
+# Compile. Pin the deployment target to LSMinimumSystemVersion below:
+# swiftc otherwise targets whatever its SDK defaults to, which can be newer
+# than the Mac it runs on. The binary still starts, but macOS then marks the
+# app as unsupported and refuses it notifications.
+MIN_MACOS="13.0"
 echo "==> Building Swift binary"
 xcrun swiftc -O \
+    -target "$(uname -m)-apple-macos$MIN_MACOS" \
     -framework JavaScriptCore \
     -o "$APP/Contents/MacOS/OpenFrontMapWatch" \
     "$HERE/mapwatch.swift"
@@ -55,10 +60,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>__MIN_MACOS__</string>
 </dict>
 </plist>
 PLIST
+sed -i '' "s/__MIN_MACOS__/$MIN_MACOS/" "$APP/Contents/Info.plist"
 
 # Ad-hoc code-sign the whole bundle. Without this, macOS's notification
 # system rejects requestAuthorization with UNErrorDomain error 1 because
